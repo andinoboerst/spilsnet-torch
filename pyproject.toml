@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spilsnet-torch"
+version = "0.1.0"
+description = "A PyTorch implementation of SPILSNet"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+authors = [
+  {name = "Andino Boerst", email = "andinoboerst@example.com"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "torch>=2.0.0",
+    "numpy",
+    "scikit-learn",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/andinoboerst/spilsnet-torch"
+"Bug Tracker" = "https://github.com/andinoboerst/spilsnet-torch/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["spilsnet*"]
