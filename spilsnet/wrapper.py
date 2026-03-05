@@ -12,11 +12,9 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from spilsnet.models import SPILSNetCore
 from spilsnet.utils import (
-    scale_data, 
-    SimulationDataset, 
-    cube_root_transform, 
-    cube_root_inverse_transform,
-    get_torch_unscaler,
+    scale_data,
+    SimulationDataset,
+    NoTransformer,
     spils_loss
 )
 
@@ -40,19 +38,21 @@ set_seed(8)
 
 class SPILSNet():
     def __init__(
-        self, 
-        save_path: str = "current_lstm_model", 
-        input_scaler=None,
-        internal_scaler=None,
-        output_scaler=None,
-        output_transform=cube_root_transform,
-        output_inverse_transform=cube_root_inverse_transform,
+        self,
+        problem_dimension: int = 2,
+        save_path: str = "current_lstm_model",
+        input_scaler_class=None,
+        internal_scaler_class=None,
+        output_scaler_class=None,
+        output_transformer=NoTransformer,
         loss_fn=spils_loss,
-        **model_config
+        hyperparameters: dict = {},
+        model_config: dict = {},
     ) -> None:
+
         """
         Initialize the SPILSNet wrapper.
-        
+
         Args:
             save_path (str): Path to save the model.
             input_scaler (object): Scaler for input data.
@@ -63,15 +63,18 @@ class SPILSNet():
             loss_fn (callable): Loss function to use. Defaults to spils_loss.
             **model_config: Configuration for the SPILSNetCore model.
         """
+
+        self.input_size = model_config["input_size"]
+        self.problem_dimension = model_config.get("problem_dimension", 2)
         self.save_path = save_path
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
+
         # Dependency injection for scalers and transforms
-        self.input_scaler = input_scaler
-        self.internal_scaler = internal_scaler
-        self.output_scaler = output_scaler
-        self.output_transform = output_transform
-        self.output_inverse_transform = output_inverse_transform
+        self.input_scaler_class = input_scaler_class
+        self.internal_scaler_class = internal_scaler_class
+        self.output_scaler_class = output_scaler_class
+        self.output_transform = output_transformer.transform
+        self.output_inverse_transform = output_transformer.inverse_transform
         self.loss_fn = loss_fn
 
         self.curr_epoch = 0
@@ -79,37 +82,21 @@ class SPILSNet():
         self.best_val_loss = float('inf')
         self.optimizer_state_dict = None
 
-        self.set_hyperparameters()
+        self.set_hyperparameters(hyperparameters)
 
-        # self._model = SPILSNetCore(
-        #     dimension=self.problem_dimension,
-        #     input_size=self.input_size,
-        #     internal_state_size=self.reduced_dims,
-        #     spatial_linear_layers=[self.input_size // self.problem_dimension],
-        #     hidden_internal_size=16,
-        #     conv_layers_out_channels=[16, 1],
-        #     kernel_size=3,
-        #     internal_layers_in=[],
-        #     n_gru_cells=1,
-        #     internal_layers_out=[16, 16],
-        #     deconv_layers_out_channels=[16],
-        #     dropout_rate=self.dropout_rate
-        # )
-
-        self._model = SPILSNetCore(**model_config)
-
+        self._model = SPILSNetCore(model_config)
         self._model.to(self.device)
 
-    def set_hyperparameters(self) -> None:
-        self.learning_rate = 0.0002
-        self.num_epochs = 5000
-        self.weight_decay = 0.01
-        self.batch_size = 8096
+    def set_hyperparameters(self, hyperparameters: dict) -> None:
+        self.learning_rate = hyperparameters.get('learning_rate', 0.001)
+        self.num_epochs = hyperparameters.get('num_epochs', 5000)
+        self.weight_decay = hyperparameters.get('weight_decay', 0.01)
+        self.batch_size = hyperparameters.get('batch_size', 2048)
+        self.early_stop_patience = hyperparameters.get('early_stop_patience', 50)
 
-        self.loss_alpha = 0.1
-        self.loss_beta = 0.9
-
-        self.dropout_rate = 0.2
+        self.loss_alpha = hyperparameters.get('loss_alpha', 0.1)
+        self.loss_beta = hyperparameters.get('loss_beta', 0.9)
+        self.loss_gamma = hyperparameters.get('loss_gamma', 0.1)
 
     def set_fit_parameters(self) -> None:
         self.optimizer = torch.optim.AdamW(self._model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
@@ -124,14 +111,10 @@ class SPILSNet():
             factor=0.1,       # Reduce LR by 10x when plateau detected
             patience=20,       # Wait 20 epochs before reducing LR
         )
-        
-        # Setup loss criterion with unscaler if output_scaler is available
-        if self.output_scaler is not None:
-            unscale_func = get_torch_unscaler(self.output_scaler, self.device)
-            self.loss_criterion = partial(self.loss_fn, unscale_func=unscale_func)
-        else:
-            # Fallback if no scaler (shouldn't happen in normal fit flow)
-            self.loss_criterion = self.loss_fn
+
+        self.n_nodes = self.input_size // self.problem_dimension
+
+        self.loss_criterion = partial(self.loss_fn, n_nodes=self.n_nodes, dimension=self.problem_dimension)
 
     def prep_data(self, X, internal_states, Y, train_indices=None, val_indices=None, test_indices=None) -> None:
         if train_indices is None or val_indices is None or test_indices is None:
@@ -140,16 +123,16 @@ class SPILSNet():
             indices = np.arange(n_sims)
             # np.random.shuffle(indices) # Should we shuffle? Maybe keep deterministic or rely on user to shuffle.
             # Let's keep it deterministic for now or use a fixed seed if we shuffle.
-            # The user asked for a "basic" split. Sequential might be safer for time series if sims are ordered, 
+            # The user asked for a "basic" split. Sequential might be safer for time series if sims are ordered,
             # but usually sims are independent. Let's do sequential to be safe and reproducible without seed issues.
-            
+
             n_train = int(0.7 * n_sims)
             n_val = int(0.15 * n_sims)
             # n_test = n_sims - n_train - n_val
-            
+
             train_sims = indices[:n_train]
-            val_sims = indices[n_train:n_train+n_val]
-            test_sims = indices[n_train+n_val:]
+            val_sims = indices[n_train:n_train + n_val]
+            test_sims = indices[n_train + n_val:]
         else:
             train_sims, val_sims, test_sims = train_indices, val_indices, test_indices
 
@@ -158,13 +141,13 @@ class SPILSNet():
         # Use injected scaler instances if provided
         # Slice X and Y to match the length of internal_states transitions (N-1)
         # Assuming X, Y, and internal_states have the same number of steps N
-        self.input_scaler, train_input_data, val_input_data, test_input_data = scale_data(X[:, :-1, :], [train_sims, val_sims, test_sims], concatenate=True, scaler=self.input_scaler)
-        self.internal_scaler, train_internal_data_in, val_internal_data_in, test_internal_data_in = scale_data(internal_states[:, :-1, :], [train_sims, val_sims, test_sims], concatenate=True, scaler=self.internal_scaler)
+        self.input_scaler, train_input_data, val_input_data, test_input_data = scale_data(X[:, :-1, :], [train_sims, val_sims, test_sims], concatenate=True, scaler=self.input_scaler_class)
+        self.internal_scaler, train_internal_data_in, val_internal_data_in, test_internal_data_in = scale_data(internal_states[:, :-1, :], [train_sims, val_sims, test_sims], concatenate=True, scaler=self.internal_scaler_class)
         internal_state_out = np.array([self.internal_scaler.transform(internal_states[i, 1:, :]) - self.internal_scaler.transform(internal_states[i, :-1, :]) for i in range(len(internal_states))])
 
-        self.internal_out_scaler, train_internal_data_out, val_internal_data_out, test_internal_data_out = scale_data(internal_state_out, [train_sims, val_sims, test_sims], concatenate=True, scaler=self.internal_scaler) 
-        
-        self.output_scaler, train_target_data, val_target_data, test_target_data = scale_data(Y[:, :-1, :], [train_sims, val_sims, test_sims], concatenate=True, scaler=self.output_scaler)
+        self.internal_out_scaler, train_internal_data_out, val_internal_data_out, test_internal_data_out = scale_data(internal_state_out, [train_sims, val_sims, test_sims], concatenate=True, scaler=self.internal_scaler_class)
+
+        self.output_scaler, train_target_data, val_target_data, test_target_data = scale_data(Y[:, :-1, :], [train_sims, val_sims, test_sims], concatenate=True, scaler=self.output_scaler_class)
 
         train_dataset = SimulationDataset(train_input_data, train_internal_data_in, train_target_data, train_internal_data_out, device=self.device)
         val_dataset = SimulationDataset(val_input_data, val_internal_data_in, val_target_data, val_internal_data_out, device=self.device)
@@ -179,18 +162,12 @@ class SPILSNet():
 
         self.prep_data(X, internal_states, Y, train_indices, val_indices, test_indices)
 
-        self.output_min = self.output_scaler.min_
-        self.output_scale = self.output_scaler.scale_
-        
         self.initial_internal_state = self.internal_scaler.transform(self.initial_internal_state.reshape(1, -1))
         self.initial_internal_state = torch.tensor(self.initial_internal_state, dtype=torch.float64).to(self.device)
-
-        self._model.to(self.device)
 
         self.set_fit_parameters()
 
         patience_counter = 0
-        early_stop_patience = 2000
 
         for epoch in range(self.curr_epoch, self.num_epochs):
             self.curr_epoch = epoch
@@ -205,7 +182,7 @@ class SPILSNet():
                 outputs, internal_states_output = self._model(batch_inputs, batch_internal_states_in)
 
                 # Compute loss: compare the entire output sequence with the target sequence
-                loss = self.loss_criterion(outputs, batch_targets, internal_states_output, batch_internal_states_out, self.loss_alpha, self.loss_beta)
+                loss = self.loss_criterion(outputs, batch_targets, internal_states_output, batch_internal_states_out, self.loss_alpha, self.loss_beta, self.loss_gamma)
 
                 # Backward pass and optimization
                 loss.backward()
@@ -214,7 +191,7 @@ class SPILSNet():
 
                 total_train_loss += loss.item()
 
-            stop_early, patience_counter, total_val_loss = self.validate_epoch_custom(epoch, self.num_epochs, total_train_loss, self.optimizer, early_stop_patience, patience_counter)
+            stop_early, patience_counter, total_val_loss = self.validate_epoch_custom(epoch, self.num_epochs, total_train_loss, self.optimizer, self.early_stop_patience, patience_counter)
 
             if isinstance(self.scheduler, ReduceLROnPlateau):
                 self.scheduler.step(total_val_loss)
@@ -244,12 +221,12 @@ class SPILSNet():
         total_val_loss /= len(self.val_loader)
 
         self.optimizer_state_dict = optimizer.state_dict()
-        
+
         # Determine base path without extension
         base_path = self.save_path
         if base_path.endswith(".pkl"):
             base_path = base_path[:-4]
-            
+
         self.save(self.save_path)
         self.save_weights(f"{base_path}_weights.pth")
 
@@ -351,5 +328,3 @@ class SPILSNet():
             path = f"{path}.pkl"
         with open(path, "rb") as f:
             return pickle.load(f)
-
-

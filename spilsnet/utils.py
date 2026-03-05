@@ -1,14 +1,28 @@
 import numpy as np
 import torch
+import torch.nn as nn
 from torch.utils.data import Dataset
-from sklearn.preprocessing import MinMaxScaler
 
 from sklearn.base import clone
+
+
+def build_mlp(in_size, hidden_sizes, out_size, drop_p=0.0):
+    layers = []
+    curr = in_size
+    for h in hidden_sizes:
+        layers.append(nn.Linear(curr, h, dtype=torch.float64))
+        layers.append(nn.Tanh())
+        if drop_p > 0:
+            layers.append(nn.Dropout(drop_p))
+        curr = h
+    layers.append(nn.Linear(curr, out_size, dtype=torch.float64))
+    return nn.Sequential(*layers)
+
 
 def scale_data(data, split_indices: list, concatenate=False, scaler=None):
     # Initialize the scaler
     if scaler is None:
-        scaler = MinMaxScaler(feature_range=(-1, 1))
+        scaler = NoScaler()
     else:
         # Clone to ensure we have a fresh estimator
         try:
@@ -40,7 +54,7 @@ def scale_data(data, split_indices: list, concatenate=False, scaler=None):
 
 
 class SimulationDataset(Dataset):
-    def __init__(self, *args, device: str | None = None):
+    def __init__(self, *args, device: str | torch.device | None = None):
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -60,78 +74,59 @@ class SimulationDataset(Dataset):
         self.data = [torch.cat((self.data[i], new_data_tensors[i])) for i in range(len(self.data))]
 
 
-def cube_root_transform(x):
-    return np.cbrt(x * 10)
+class NoScaler:
+    def fit(self, X):
+        pass
+
+    def transform(self, X):
+        return X
+
+    def inverse_transform(self, X):
+        return X
 
 
-def cube_root_inverse_transform(y):
-    return y ** 3 / 10
-
-class MinMaxScalerUnscaler:
-    def __init__(self, min_val, scale_val):
-        self.min_val = min_val
-        self.scale_val = scale_val
-    
-    def __call__(self, x):
-        return (x - self.min_val) / self.scale_val
-
-class StandardScalerUnscaler:
-    def __init__(self, mean_val, scale_val):
-        self.mean_val = mean_val
-        self.scale_val = scale_val
-    
-    def __call__(self, x):
-        return x * self.scale_val + self.mean_val
-
-class IdentityUnscaler:
-    def __call__(self, x):
+class NoTransformer:
+    @staticmethod
+    def transform(x):
         return x
 
-def get_torch_unscaler(scaler, device):
-    """
-    Returns a callable that takes a tensor and unscales it using the provided scaler's parameters.
-    Supports sklearn MinMaxScaler and StandardScaler.
-    """
-    import torch
-    from sklearn.preprocessing import MinMaxScaler, StandardScaler
+    @staticmethod
+    def inverse_transform(y):
+        return y
 
-    if isinstance(scaler, MinMaxScaler):
-        min_val = torch.tensor(scaler.min_, dtype=torch.float64, device=device)
-        scale_val = torch.tensor(scaler.scale_, dtype=torch.float64, device=device)
-        return MinMaxScalerUnscaler(min_val, scale_val)
-    
-    elif isinstance(scaler, StandardScaler):
-        mean_val = torch.tensor(scaler.mean_, dtype=torch.float64, device=device)
-        scale_val = torch.tensor(scaler.scale_, dtype=torch.float64, device=device)
-        return StandardScalerUnscaler(mean_val, scale_val)
-    
-    else:
-        return IdentityUnscaler()
 
-def spils_loss(y_t_pred, y_t_target, i_t_pred, i_t_target, alpha=0.7, beta=0.3, penalty=1.2, delta=0.2, unscale_func=None):
-    import torch.nn as nn
-    
-    # unscale y (needed to identify penalized values)
-    if unscale_func is not None:
-        unscaled_y_pred = unscale_func(y_t_pred)
-        unscaled_y_target = unscale_func(y_t_target)
-    else:
-        unscaled_y_pred = y_t_pred
-        unscaled_y_target = y_t_target
+class CubeRootTransformer:
+    @staticmethod
+    def transform(x: float, scaling: float = 10):
+        return np.cbrt(x * scaling)
 
-    # penalize error in the cube root domain -> prefer underestimation
-    penalized_values = unscaled_y_pred.abs() - unscaled_y_target.abs() > 0
+    @staticmethod
+    def inverse_transform(y: float, scaling: float = 10):
+        return y ** 3 / scaling
 
-    # apply Huber Loss to unscaled space
-    loss_y = nn.functional.huber_loss(unscaled_y_pred, unscaled_y_target, delta=delta, reduction="none")
 
-    # apply penalty
-    loss_y[penalized_values] *= penalty
-    loss_F = loss_y.mean()
+def spils_loss(y_t_pred, y_t_target, i_t_pred, i_t_target, alpha=0.9, beta=0.1, gamma=0.0, n_nodes=51, dimension=2):
 
-    # internal state loss
-    loss_i = nn.MSELoss()(i_t_pred, i_t_target)
+    loss_F = nn.functional.mse_loss(y_t_pred, y_t_target)
 
-    # Weighted sum
-    total_loss = alpha * loss_F + beta * loss_i
-    return total_loss
+    # 3. Internal state loss
+    loss_i = nn.functional.mse_loss(i_t_pred, i_t_target)
+
+    total_elements = y_t_pred.numel()
+    batch_size = total_elements // (n_nodes * dimension)
+
+    # Reshape into [Batch, Nodes, Dim]
+    pred_3d = y_t_pred.view(batch_size, n_nodes, dimension)
+    target_3d = y_t_target.view(batch_size, n_nodes, dimension)
+
+    error_3d = pred_3d - target_3d
+
+    left_neighbors = error_3d[:, 0:-2, :]
+    center_nodes = error_3d[:, 1:-1, :]
+    right_neighbors = error_3d[:, 2:, :]
+
+    laplacian_of_error = left_neighbors - (2 * center_nodes) + right_neighbors
+
+    loss_s = torch.mean(laplacian_of_error ** 2)
+
+    return (alpha * loss_F) + (beta * loss_i) + (gamma * loss_s)

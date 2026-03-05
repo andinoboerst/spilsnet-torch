@@ -1,153 +1,158 @@
 import torch
 import torch.nn as nn
 
+from spilsnet.utils import build_mlp
+
 
 class SPILSNetCore(nn.Module):
-    def __init__(
-        self,
-        dimension,
-        input_size,
-        internal_state_size,
-        spatial_linear_layers: list,
-        hidden_internal_size: int = 16,
-        conv_layers_out_channels: list = [1],
-        kernel_size: int = 3,
-        internal_layers_in: list = [],
-        n_gru_cells: int = 1,
-        internal_layers_out: list = [],
-        deconv_layers_out_channels: list = [],
-        dropout_rate=0.2
-    ):
-        super(SPILSNetCore, self).__init__()
+    def __init__(self, config):
+        super().__init__()
 
-        if len(conv_layers_out_channels) < 1:
-            raise ValueError("At least one convolutional layer must be specified")
-        if kernel_size % 2 == 0:
-            raise ValueError("Kernel size must be odd for 'same' padding")
-        if kernel_size < 1:
-            raise ValueError("Kernel size must be at least 1")
-        if n_gru_cells < 1:
-            raise ValueError("At least one GRU cell must be specified")
-        if len(spatial_linear_layers) < 1:
-            raise ValueError("At least one spatial linear layer must be specified")
-        if hidden_internal_size < 1:
-            raise ValueError("Hidden internal size must be at least 1")
-        if input_size % dimension != 0:
-            raise ValueError("Input size must be divisible by the dimension")
+        self.n_nodes = config["input_size"] // config["dimension"]
+        self.dim = config["dimension"]
+        self.drop_p = config.get("dropout_rate", 0.0)
 
-        self.dimension = dimension
-        self.n_nodes = input_size // self.dimension
+        # --- 1. ENCODER (The Eye) ---
+        self.encoder_stack = nn.ModuleList()
+        current_in = self.dim
 
-        if spatial_linear_layers[-1] % self.n_nodes != 0:
-            raise ValueError("The last spatial linear layer size must be divisible by the number of nodes")
+        # Note: We removed 'skip_processors' because this is an asymmetric model.
+        # We don't need U-Net skips for the MLP decoder.
+        for layer_cfg in config["encoder_structure"]:
+            block = nn.Sequential(
+                nn.Conv1d(current_in, layer_cfg["out"],
+                          kernel_size=layer_cfg["k"], stride=layer_cfg["s"], padding=layer_cfg["p"],
+                          padding_mode="replicate", dtype=torch.float64),
+                nn.Tanh(),
+                nn.Dropout(self.drop_p) if self.drop_p > 0 else nn.Identity()
+            )
+            self.encoder_stack.append(block)
+            current_in = layer_cfg["out"]
 
-        self.spatial_linear_layers = spatial_linear_layers
+        # --- DYNAMIC SIZE DETECTION (The Dummy Pass Trick) ---
+        # 1. Create a fake input tensor matching your actual data shape: [Batch=1, Channels=Dim, Length=Nodes]
+        dummy_input = torch.zeros(1, self.dim, self.n_nodes, dtype=torch.float64)
 
-        self.convolutional_stack = nn.ModuleList()
-        in_channels = dimension
-        for out_channels in conv_layers_out_channels:
-            self.convolutional_stack.append(nn.Conv1d(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                kernel_size=kernel_size,
-                padding="same",
-                dtype=torch.float64
-            ))
-            self.convolutional_stack.append(nn.Tanh())
-            self.convolutional_stack.append(nn.Dropout(dropout_rate))
-            in_channels = out_channels
+        # 2. Pass it through the encoder stack without tracking gradients
+        with torch.no_grad():
+            dummy_out = dummy_input
+            for layer in self.encoder_stack:
+                dummy_out = layer(dummy_out)
 
-        self.internal_in_layers = nn.ModuleList()
-        internal_layers_in.append(hidden_internal_size)
-        internal_in_input_size = internal_state_size
-        for layer_size in internal_layers_in:
-            self.internal_in_layers.append(nn.Linear(internal_in_input_size, layer_size, dtype=torch.float64))
-            self.internal_in_layers.append(nn.Tanh())
-            self.internal_in_layers.append(nn.Dropout(dropout_rate))
-            internal_in_input_size = layer_size
+        # 3. Read the exact spatial dimension that survived!
+        # dummy_out shape is [1, current_in, spatial_nodes_out]
+        spatial_nodes_out = dummy_out.size(2)
 
-        self.gru_cells = nn.ModuleList()
-        input_size_for_gru = self.n_nodes * conv_layers_out_channels[-1]
-        for _ in range(n_gru_cells):
-            self.gru_cells.append(nn.GRUCell(input_size_for_gru, hidden_internal_size, dtype=torch.float64))
-            input_size_for_gru = hidden_internal_size
+        # Define how many "Macro-Regions" you want the skip connection to have
+        self.skip_target_nodes = config.get("skip_target_nodes", 3)
 
-        self.internal_out_layers = nn.ModuleList()
-        # internal_layers_out.append(internal_state_size)
-        internal_out_input_size = hidden_internal_size
-        for layer_size in internal_layers_out:
-            self.internal_out_layers.append(nn.Linear(internal_out_input_size, layer_size, dtype=torch.float64))
-            self.internal_out_layers.append(nn.Tanh())
-            self.internal_out_layers.append(nn.Dropout(dropout_rate))
-            internal_out_input_size = layer_size
-        self.internal_out_layers.append(nn.Linear(internal_out_input_size, internal_state_size, dtype=torch.float64))
+        # The Learned Spatial Downsampler!
+        # Maps whatever comes out of the Conv stack down to exactly 3 nodes.
+        self.spatial_downsampler = nn.Sequential(
+            nn.Linear(spatial_nodes_out, self.skip_target_nodes, dtype=torch.float64),
+            nn.Tanh(),
+            # nn.Dropout(self.drop_p) if self.drop_p > 0 else nn.Identity()
+        )
 
-        self.spatial_linear_layers_stack = nn.ModuleList()
-        spatial_input_size = hidden_internal_size + self.n_nodes * conv_layers_out_channels[-1]
-        for layer_size in spatial_linear_layers:
-            self.spatial_linear_layers_stack.append(nn.Linear(spatial_input_size, layer_size, dtype=torch.float64))
-            self.spatial_linear_layers_stack.append(nn.Tanh())
-            self.spatial_linear_layers_stack.append(nn.Dropout(dropout_rate))
-            spatial_input_size = layer_size
+        # The flat size for the Decoder MLP is now strictly guaranteed:
+        skip_connection_size = current_in * self.skip_target_nodes
 
-        self.deconv_layers = nn.ModuleList()
-        in_channels = spatial_linear_layers[-1] // self.n_nodes
-        deconv_layers_out_channels.append(dimension)
-        deconv_padding = kernel_size // 2
-        for out_channels in deconv_layers_out_channels:
-            self.deconv_layers.append(nn.ConvTranspose1d(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                kernel_size=kernel_size,
-                padding=deconv_padding,
-                output_padding=0,
-                dtype=torch.float64
-            ))
-            self.deconv_layers.append(nn.Tanh())
-            self.deconv_layers.append(nn.Dropout(dropout_rate))
-            in_channels = out_channels
+        # --- 2. BOTTLENECK (The Brain) ---
+        self.pool_size = config["bottleneck_pool_size"]
+        self.pooling_layer = nn.AdaptiveAvgPool1d(self.pool_size)
 
-        self.spatial_out_final = nn.Linear(input_size, input_size, dtype=torch.float64)
+        # Fix: Ensure we get the channel count from the last config dict
+        last_layer_out = config["encoder_structure"][-1]["out"]
+        flat_size = last_layer_out * self.pool_size
 
-    def forward(self, x_in, internal_state) -> tuple:
+        latent_dim = config["latent_dim"]
+        self.gru_hidden = config["gru_hidden_size"]
+        self.gru_layers = config.get("gru_layers", 1)
 
-        disps = x_in[:, :self.n_nodes * self.dimension]
-        x_disps = disps[:, ::self.dimension]
-        y_disps = disps[:, 1::self.dimension]
-        if self.dimension == 3:
-            z_disps = disps[:, 2::self.dimension]
-            z_conv = torch.stack([x_disps, y_disps, z_disps], dim=1)
-        else:
-            z_conv = torch.stack([x_disps, y_disps], dim=1)
+        # Map Spatial Features -> GRU Input
+        self.latent_enc = build_mlp(flat_size, config["latent_encoder_mlp"], latent_dim, drop_p=0.0)
 
-        for layer in self.convolutional_stack:
-            z_conv = layer(z_conv)
+        # Removed 'self.latent_dec' (Dead Code):
+        # We don't need to reconstruct the bottleneck because we use the concatenation skip.
 
-        z_conv = z_conv.flatten(1)
+        # --- 3. PHYSICS CORE (GRU) ---
+        self.gru = nn.GRU(
+            input_size=latent_dim,
+            hidden_size=self.gru_hidden,
+            num_layers=self.gru_layers,
+            dropout=0.0,
+            dtype=torch.float64
+        )
 
-        z_i = internal_state.clone()
-        for layer in self.internal_in_layers:
-            z_i = layer(z_i)
+        # Internal State Handling
+        self.total_hidden_params = self.gru_layers * self.gru_hidden
+        self.internal_in = build_mlp(config["internal_state_size"], config["internal_input_mlp"], self.total_hidden_params, drop_p=0.0)
+        self.internal_out = build_mlp(self.gru_hidden, config["internal_output_mlp"], config["internal_state_size"], drop_p=0.0)
 
-        z_GRU_main = z_conv.clone()
-        z_GRU_hidden = z_i.clone()
-        for gru_cell in self.gru_cells:
-            z_GRU_hidden = gru_cell(z_GRU_main, z_GRU_hidden)
-            z_GRU_main = z_GRU_hidden
+        # --- 4. GLOBAL DECODER (The Projector) ---
+        # Input: History (GRU) + Current Context (Pooled Features)
+        global_in_size = self.gru_hidden + skip_connection_size
 
-        i_next = z_GRU_hidden.clone()
-        for layer in self.internal_out_layers:
-            i_next = layer(i_next)
+        # Output: FULL NODAL VECTOR
+        self.latent_decoder = build_mlp(
+            in_size=global_in_size,
+            hidden_sizes=config.get("latent_decoder_structure", [512, 1024]),
+            out_size=self.n_nodes * self.dim,
+            drop_p=self.drop_p
+        )
 
-        z_F_linear = torch.cat([z_conv, z_GRU_hidden], dim=1)
-        for layer in self.spatial_linear_layers_stack:
-            z_F_linear = layer(z_F_linear)
+        # --- 5. SMOOTHING LAYER ---
+        # A final convolution to clean up MLP noise.
+        # k=3, padding="same" ensures dimensions don't change.
+        self.smoothing_layer = nn.Conv1d(self.dim, self.dim, kernel_size=config.get("smoothing_kernel_size", 3), padding="same",
+                                         padding_mode="replicate", dtype=torch.float64)
 
-        z_F_deconv = z_F_linear.view(-1, self.spatial_linear_layers[-1] // self.n_nodes, self.n_nodes)
-        for layer in self.deconv_layers:
-            z_F_deconv = layer(z_F_deconv)
+    def forward(self, x_in, internal_state):
+        # 1. Reshape Input: [Batch, Nodes*Dim] -> [Batch, Dim, Nodes]
+        # view(-1, Nodes, Dim) -> permute(0, 2, 1) ensures we group (x1,y1), (x2,y2)... correctly
+        x = x_in.view(-1, self.n_nodes, self.dim).permute(0, 2, 1)
+        batch_size = x.size(0)
 
-        F_permuted = z_F_deconv.permute(0, 2, 1).flatten(start_dim=1)
-        F = self.spatial_out_final(F_permuted)
+        # 2. Encoder Pass
+        curr = x
+        for layer in self.encoder_stack:
+            curr = layer(curr)
 
-        return F, i_next
+        # 3. Bottleneck
+        pooled = self.pooling_layer(curr).flatten(1)
+        gru_input = self.latent_enc(pooled).unsqueeze(0)
+
+        learned_skip = self.spatial_downsampler(curr)
+
+        # Flatten to [Batch, Channels * skip_target_nodes]
+        skip_connection = learned_skip.flatten(1)
+
+        # 4. GRU Initialization
+        h_flat = torch.tanh(self.internal_in(internal_state))
+        h_0 = h_flat.view(batch_size, self.gru_layers, self.gru_hidden).permute(1, 0, 2).contiguous()
+
+        # 5. Physics Step
+        _, h_n = self.gru(gru_input, h_0)
+        h_last = h_n[-1]  # The state of the top layer
+
+        internal_next = self.internal_out(h_last)
+
+        # 6. Global Projection (The Skip Connection)
+        # We define the force based on History (h_last) AND Current Strain (pooled)
+        global_input = torch.cat([h_last, skip_connection], dim=1)
+
+        # MLP Output: [Batch, Nodes * Dim]
+        raw_force = self.latent_decoder(global_input)
+
+        # 1. View as [Batch, Nodes, Dim] -> Restores (x,y) pairs
+        # 2. Permute -> [Batch, Dim, Nodes] -> Ready for Conv1d
+        force_spatial = raw_force.view(batch_size, self.n_nodes, self.dim).permute(0, 2, 1)
+
+        # 7. Smoothing Pass
+        # Removes high-frequency jitter from the MLP prediction
+        final_spatial = self.smoothing_layer(force_spatial)
+
+        # 8. Flatten for Output
+        out_flat = final_spatial.permute(0, 2, 1).reshape(x_in.shape)
+
+        return out_flat, internal_next
