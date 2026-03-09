@@ -5,22 +5,40 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spilsnet-torch"
 version = "0.1.0"
-description = "A PyTorch implementation of SPILSNet"
+description = "A PyTorch implementation of SPILSNet (Structure-Preserving Input-Output Learning System Network)"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {file = "LICENSE"}
 authors = [
   {name = "Andino Boerst", email = "andinoboerst@example.com"},
 ]
+keywords = [
+    "physics-informed-machine-learning",
+    "pytorch",
+    "dynamical-systems",
+    "spilsnet"
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
     "torch>=2.0.0",
     "numpy",
     "scikit-learn",
+    "safetensors",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov",
+    "ruff",
+    "black",
+    "mypy",
 ]
 
 [project.urls]
@@ -30,3 +48,15 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["spilsnet*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "ANN"]
+ignore = ["ANN101", "ANN102"]
+
+[tool.black]
+line-length = 120
+target-version = ['py38']

@@ -1,67 +1,108 @@
 import torch
 import torch.nn as nn
+from typing import Dict, Any, List, Tuple
 
 from spilsnet.utils import build_mlp
 
 
 class SPILSNetCore(nn.Module):
-    def __init__(self, config):
+    """
+    Core PyTorch implementation of the SPILSNet architecture.
+
+    SPILSNet (Structure-Preserving Input-Output Learning System Network) consists of:
+    1. An encoder stack (The Eye) for spatial feature extraction.
+    2. A learned spatial downsampler for skip connections.
+    3. An AdaptiveAvgPool1d bottleneck (The Brain).
+    4. A physics core using GRU for temporal dynamics.
+    5. A global decoder forodal vector projection.
+    6. A smoothing layer for noise reduction.
+
+    Attributes:
+        n_nodes (int): Number of spatial nodes in the input.
+        dim (int): Dimension of each node (e.g., 2 for 2D coordinates).
+        drop_p (float): Dropout probability.
+        dtype (torch.dtype): Data type for model parameters and computations.
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        """
+        Initialize the SPILSNetCore model.
+
+        Args:
+            config (Dict[str, Any]): Configuration dictionary containing model hyperparameters.
+                Required keys:
+                - "input_size" (int): Total size of the input nodal vector (n_nodes * dimension).
+                - "dimension" (int): Dimension of each node.
+                - "encoder_structure" (List[Dict[str, Any]]): List of conv layer parameters (out, k, s, p).
+                - "bottleneck_pool_size" (int): Size of the adaptive average pooling.
+                - "latent_dim" (int): Dimension of the latent representation.
+                - "gru_hidden_size" (int): Size of the GRU hidden state.
+                - "latent_encoder_mlp" (List[int]): Hidden sizes for encoder MLP.
+                - "internal_state_size" (int): Size of the internal states.
+                - "internal_input_mlp" (List[int]): Hidden sizes for internal input MLP.
+                - "internal_output_mlp" (List[int]): Hidden sizes for internal output MLP.
+                Optional keys:
+                - "dropout_rate" (float): Dropout probability. Defaults to 0.0.
+                - "skip_target_nodes" (int): Number of nodes for skip connection. Defaults to 3.
+                - "gru_layers" (int): Number of GRU layers. Defaults to 1.
+                - "latent_decoder_structure" (List[int]): Hidden sizes for decoder MLP. Defaults to [512, 1024].
+                - "smoothing_kernel_size" (int): Kernel size for smoothing convolution. Defaults to 3.
+                - "dtype" (str): Data type ('float32' or 'float64'). Defaults to 'float64'.
+        """
         super().__init__()
 
         self.n_nodes = config["input_size"] // config["dimension"]
         self.dim = config["dimension"]
         self.drop_p = config.get("dropout_rate", 0.0)
 
+        dtype_str = config.get("dtype", "float64")
+        self.dtype = torch.float64 if dtype_str == "float64" else torch.float32
+
         # --- 1. ENCODER (The Eye) ---
         self.encoder_stack = nn.ModuleList()
         current_in = self.dim
 
-        # Note: We removed 'skip_processors' because this is an asymmetric model.
-        # We don't need U-Net skips for the MLP decoder.
         for layer_cfg in config["encoder_structure"]:
             block = nn.Sequential(
-                nn.Conv1d(current_in, layer_cfg["out"],
-                          kernel_size=layer_cfg["k"], stride=layer_cfg["s"], padding=layer_cfg["p"],
-                          padding_mode="replicate", dtype=torch.float64),
+                nn.Conv1d(
+                    current_in,
+                    layer_cfg["out"],
+                    kernel_size=layer_cfg["k"],
+                    stride=layer_cfg["s"],
+                    padding=layer_cfg["p"],
+                    padding_mode="replicate",
+                    dtype=self.dtype,
+                ),
                 nn.Tanh(),
-                nn.Dropout(self.drop_p) if self.drop_p > 0 else nn.Identity()
+                nn.Dropout(self.drop_p) if self.drop_p > 0 else nn.Identity(),
             )
             self.encoder_stack.append(block)
             current_in = layer_cfg["out"]
 
         # --- DYNAMIC SIZE DETECTION (The Dummy Pass Trick) ---
-        # 1. Create a fake input tensor matching your actual data shape: [Batch=1, Channels=Dim, Length=Nodes]
-        dummy_input = torch.zeros(1, self.dim, self.n_nodes, dtype=torch.float64)
+        dummy_input = torch.zeros(1, self.dim, self.n_nodes, dtype=self.dtype)
 
-        # 2. Pass it through the encoder stack without tracking gradients
         with torch.no_grad():
             dummy_out = dummy_input
             for layer in self.encoder_stack:
                 dummy_out = layer(dummy_out)
 
-        # 3. Read the exact spatial dimension that survived!
-        # dummy_out shape is [1, current_in, spatial_nodes_out]
         spatial_nodes_out = dummy_out.size(2)
 
-        # Define how many "Macro-Regions" you want the skip connection to have
         self.skip_target_nodes = config.get("skip_target_nodes", 3)
 
         # The Learned Spatial Downsampler!
-        # Maps whatever comes out of the Conv stack down to exactly 3 nodes.
         self.spatial_downsampler = nn.Sequential(
-            nn.Linear(spatial_nodes_out, self.skip_target_nodes, dtype=torch.float64),
+            nn.Linear(spatial_nodes_out, self.skip_target_nodes, dtype=self.dtype),
             nn.Tanh(),
-            # nn.Dropout(self.drop_p) if self.drop_p > 0 else nn.Identity()
         )
 
-        # The flat size for the Decoder MLP is now strictly guaranteed:
         skip_connection_size = current_in * self.skip_target_nodes
 
         # --- 2. BOTTLENECK (The Brain) ---
         self.pool_size = config["bottleneck_pool_size"]
         self.pooling_layer = nn.AdaptiveAvgPool1d(self.pool_size)
 
-        # Fix: Ensure we get the channel count from the last config dict
         last_layer_out = config["encoder_structure"][-1]["out"]
         flat_size = last_layer_out * self.pool_size
 
@@ -70,10 +111,7 @@ class SPILSNetCore(nn.Module):
         self.gru_layers = config.get("gru_layers", 1)
 
         # Map Spatial Features -> GRU Input
-        self.latent_enc = build_mlp(flat_size, config["latent_encoder_mlp"], latent_dim, drop_p=0.0)
-
-        # Removed 'self.latent_dec' (Dead Code):
-        # We don't need to reconstruct the bottleneck because we use the concatenation skip.
+        self.latent_enc = build_mlp(flat_size, config["latent_encoder_mlp"], latent_dim, drop_p=0.0, dtype=self.dtype)
 
         # --- 3. PHYSICS CORE (GRU) ---
         self.gru = nn.GRU(
@@ -81,35 +119,53 @@ class SPILSNetCore(nn.Module):
             hidden_size=self.gru_hidden,
             num_layers=self.gru_layers,
             dropout=0.0,
-            dtype=torch.float64
+            dtype=self.dtype,
         )
 
         # Internal State Handling
         self.total_hidden_params = self.gru_layers * self.gru_hidden
-        self.internal_in = build_mlp(config["internal_state_size"], config["internal_input_mlp"], self.total_hidden_params, drop_p=0.0)
-        self.internal_out = build_mlp(self.gru_hidden, config["internal_output_mlp"], config["internal_state_size"], drop_p=0.0)
+        self.internal_in = build_mlp(
+            config["internal_state_size"], config["internal_input_mlp"], self.total_hidden_params, drop_p=0.0, dtype=self.dtype
+        )
+        self.internal_out = build_mlp(
+            self.gru_hidden, config["internal_output_mlp"], config["internal_state_size"], drop_p=0.0, dtype=self.dtype
+        )
 
         # --- 4. GLOBAL DECODER (The Projector) ---
-        # Input: History (GRU) + Current Context (Pooled Features)
         global_in_size = self.gru_hidden + skip_connection_size
 
-        # Output: FULL NODAL VECTOR
         self.latent_decoder = build_mlp(
             in_size=global_in_size,
             hidden_sizes=config.get("latent_decoder_structure", [512, 1024]),
             out_size=self.n_nodes * self.dim,
-            drop_p=self.drop_p
+            drop_p=self.drop_p,
+            dtype=self.dtype,
         )
 
         # --- 5. SMOOTHING LAYER ---
-        # A final convolution to clean up MLP noise.
-        # k=3, padding="same" ensures dimensions don't change.
-        self.smoothing_layer = nn.Conv1d(self.dim, self.dim, kernel_size=config.get("smoothing_kernel_size", 3), padding="same",
-                                         padding_mode="replicate", dtype=torch.float64)
+        self.smoothing_layer = nn.Conv1d(
+            self.dim,
+            self.dim,
+            kernel_size=config.get("smoothing_kernel_size", 3),
+            padding="same",
+            padding_mode="replicate",
+            dtype=self.dtype,
+        )
 
-    def forward(self, x_in, internal_state):
+    def forward(self, x_in: torch.Tensor, internal_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass of the SPILSNetCore model.
+
+        Args:
+            x_in (torch.Tensor): Input nodal vector of shape [Batch, Nodes * Dim].
+            internal_state (torch.Tensor): Internal state of shape [Batch, InternalStateSize].
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]:
+                - out_flat (torch.Tensor): Predicted nodal vector of shape [Batch, Nodes * Dim].
+                - internal_next (torch.Tensor): Next internal state of shape [Batch, InternalStateSize].
+        """
         # 1. Reshape Input: [Batch, Nodes*Dim] -> [Batch, Dim, Nodes]
-        # view(-1, Nodes, Dim) -> permute(0, 2, 1) ensures we group (x1,y1), (x2,y2)... correctly
         x = x_in.view(-1, self.n_nodes, self.dim).permute(0, 2, 1)
         batch_size = x.size(0)
 
@@ -138,7 +194,6 @@ class SPILSNetCore(nn.Module):
         internal_next = self.internal_out(h_last)
 
         # 6. Global Projection (The Skip Connection)
-        # We define the force based on History (h_last) AND Current Strain (pooled)
         global_input = torch.cat([h_last, skip_connection], dim=1)
 
         # MLP Output: [Batch, Nodes * Dim]
@@ -149,7 +204,6 @@ class SPILSNetCore(nn.Module):
         force_spatial = raw_force.view(batch_size, self.n_nodes, self.dim).permute(0, 2, 1)
 
         # 7. Smoothing Pass
-        # Removes high-frequency jitter from the MLP prediction
         final_spatial = self.smoothing_layer(force_spatial)
 
         # 8. Flatten for Output

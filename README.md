@@ -1,45 +1,97 @@
-# spilsnet-torch
+# SPILSNet-Torch
 
-A PyTorch implementation of SPILSNet (Structure-Preserving Input-Output Learning System Network).
+[![PyPI version](https://img.shields.io/pypi/v/spilsnet-torch.svg)](https://pypi.org/project/spilsnet-torch/)
+[![Tests](https://github.com/andinoboerst/spilsnet-torch/actions/workflows/tests.yml/badge.svg)](https://github.com/andinoboerst/spilsnet-torch/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+A high-performance PyTorch implementation of **SPILSNet** (Structure-Preserving Input-Output Learning System Network). 
+
+SPILSNet is designed for modeling complex dynamical systems where preserving physical structure (like spatial relationships and temporal consistency) is critical. It combines convolutional encoders for spatial feature extraction with a Gated Recurrent Unit (GRU) core to capture temporal evolution, while maintaining a learned skip-connection architecture to preserve high-frequency details.
+
+## Features
+
+- **Unified Non-Pickle Serialization**: Industry-standard `safetensors` format for weights and metadata (config, scalers), ensuring cross-platform safety and performance.
+- **Physics-Inspired Temporal Dynamics**: GRU-based core for robust state-space modeling.
+- **Flexible Scaling**: Built-in support for Scikit-learn scalers and custom transformers (e.g., CubeRoot).
+- **Professional Engineering**: Full type hinting, Google-style docstrings, and robust serialization.
+- **Extensible Loss**: Custom `spils_loss` including Laplacian smoothness terms for spatial consistency.
 
 ## Installation
 
-You can install the package directly from the source:
+Install via pip:
 
 ```bash
-pip install .
+pip install spilsnet-torch
 ```
 
-## Usage
+For development:
+
+```bash
+git clone https://github.com/andinoboerst/spilsnet-torch.git
+cd spilsnet-torch
+pip install -e ".[dev]"
+```
+
+## Quick Start
 
 ```python
+import numpy as np
 import torch
-from spilsnet import SPILSNetCore
+from spilsnet import SPILSNet
+from sklearn.preprocessing import StandardScaler
 
-# Define model parameters
-model = SPILSNetCore(
-    dimension=2,
-    input_size=10,
-    internal_state_size=5,
-    spatial_linear_layers=[5],
-    hidden_internal_size=16,
-    conv_layers_out_channels=[16, 1],
-    kernel_size=3,
-    internal_layers_in=[],
-    n_gru_cells=1,
-    internal_layers_out=[16, 16],
-    deconv_layers_out_channels=[16],
-    dropout_rate=0.2
+# 1. Configure the architecture
+model_config = {
+    "dimension": 2,                # 2D coordinates (x, y)
+    "input_size": 102,             # 51 nodes * 2 dimensions
+    "internal_state_size": 16,     # Size of physical internal states
+    "encoder_structure": [
+        {"out": 32, "k": 3, "s": 1, "p": 1},
+        {"out": 16, "k": 3, "s": 1, "p": 1},
+    ],
+    "bottleneck_pool_size": 4,
+    "latent_dim": 32,
+    "gru_hidden_size": 64,
+    "latent_encoder_mlp": [64, 64],
+    "internal_input_mlp": [32],
+    "internal_output_mlp": [32],
+    "dropout_rate": 0.1,
+}
+
+# 2. Initialize the wrapper
+model = SPILSNet(
+    model_config=model_config,
+    input_scaler_class=StandardScaler(),
+    output_scaler_class=StandardScaler()
 )
 
-# Create dummy input
-batch_size = 32
-x_in = torch.randn(batch_size, 10)
-internal_state = torch.randn(batch_size, 5)
+# 3. Fit the model
+# X: [Sims, Steps, Input_Size], Y: [Sims, Steps, Output_Size], I: [Sims, Steps, Internal_Size]
+X, Y, I = np.random.randn(10, 50, 102), np.random.randn(10, 50, 102), np.random.randn(10, 50, 16)
+model.fit(X, Y, I)
 
-# Forward pass
-output, next_internal_state = model(x_in, internal_state)
+# 4. Sequential Inference
+model.initialize_memory_variables()
+current_x = np.random.randn(102)
+next_y = model.predict(current_x)
 
-print("Output shape:", output.shape)
-print("Next internal state shape:", next_internal_state.shape)
+print(f"Predicted next state shape: {next_y.shape}")
 ```
+
+## Testing
+
+Run the test suite using `pytest`:
+
+```bash
+pytest
+```
+
+To run with coverage:
+
+```bash
+pytest --cov=spilsnet
+```
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
