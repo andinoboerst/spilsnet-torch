@@ -188,7 +188,7 @@ class SPILSNet:
         # 1. Scale Input Data
         input_scaler_to_use = getattr(self, "input_scaler", None) or self.input_scaler_class
         self.input_scaler, train_in, val_in, test_in = scale_data(
-            X[:, :-1, :], splits, concatenate=True, scaler=input_scaler_to_use
+            X, splits, concatenate=True, scaler=input_scaler_to_use
         )
 
         # 2. Scale Internal States
@@ -213,7 +213,7 @@ class SPILSNet:
         # 4. Scale Target Data
         output_scaler_to_use = getattr(self, "output_scaler", None) or self.output_scaler_class
         self.output_scaler, train_target, val_target, test_target = scale_data(
-            Y[:, :-1, :], splits, concatenate=True, scaler=output_scaler_to_use
+            Y, splits, concatenate=True, scaler=output_scaler_to_use
         )
 
         # Create datasets
