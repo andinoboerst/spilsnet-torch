@@ -53,7 +53,8 @@ class SPILSNet:
         self,
         save_path: str = "spilsnet_model",
         input_scaler_class: Any = None,
-        internal_scaler_class: Any = None,
+        internal_in_scaler_class: Any = None,
+        internal_out_scaler_class: Any = None,
         output_scaler_class: Any = None,
         output_transformer: Any = NoTransformer,
         loss_fn: Callable = spils_loss,
@@ -86,7 +87,8 @@ class SPILSNet:
 
         # Configuration for data processing
         self.input_scaler_class = input_scaler_class
-        self.internal_scaler_class = internal_scaler_class
+        self.internal_in_scaler_class = internal_in_scaler_class
+        self.internal_out_scaler_class = internal_out_scaler_class
         self.output_scaler_class = output_scaler_class
         self.output_transform = output_transformer.transform
         self.output_inverse_transform = output_transformer.inverse_transform
@@ -123,9 +125,9 @@ class SPILSNet:
         self.batch_size = hyperparameters.get("batch_size", 2048)
         self.early_stop_patience = hyperparameters.get("early_stop_patience", 50)
 
-        self.loss_alpha = hyperparameters.get("loss_alpha", 0.1)
-        self.loss_beta = hyperparameters.get("loss_beta", 0.9)
-        self.loss_gamma = hyperparameters.get("loss_gamma", 0.1)
+        self.loss_alpha = hyperparameters.get("loss_alpha", 0.995)
+        self.loss_beta = hyperparameters.get("loss_beta", 0.005)
+        self.loss_gamma = hyperparameters.get("loss_gamma", 0.0)
 
     def _setup_training(self) -> None:
         """
@@ -145,7 +147,7 @@ class SPILSNet:
         )
 
         self.n_nodes = self.input_size // self.problem_dimension
-        self.loss_criterion = partial(self.loss_fn, n_nodes=self.n_nodes, dimension=self.problem_dimension)
+        self.loss_criterion = partial(self.loss_fn, n_nodes=self.n_nodes, dimension=self.problem_dimension, alpha=self.loss_alpha, beta=self.loss_beta, gamma=self.loss_gamma)
 
     def prep_data(
         self,
@@ -192,7 +194,7 @@ class SPILSNet:
         )
 
         # 2. Scale Internal States
-        internal_scaler_to_use = getattr(self, "internal_scaler", None) or self.internal_scaler_class
+        internal_scaler_to_use = getattr(self, "internal_scaler", None) or self.internal_in_scaler_class
         self.internal_scaler, train_int_in, val_int_in, test_int_in = scale_data(
             internal_states[:, :-1, :], splits, concatenate=True, scaler=internal_scaler_to_use
         )
@@ -205,7 +207,7 @@ class SPILSNet:
             ]
         )
 
-        internal_out_scaler_to_use = getattr(self, "internal_out_scaler", None) or self.internal_scaler_class
+        internal_out_scaler_to_use = getattr(self, "internal_out_scaler", None) or self.internal_out_scaler_class
         self.internal_out_scaler, train_int_out, val_int_out, test_int_out = scale_data(
             internal_state_out, splits, concatenate=True, scaler=internal_out_scaler_to_use
         )
@@ -295,7 +297,6 @@ class SPILSNet:
                 outputs, next_int = self._model(inputs, int_in)
                 loss = self.loss_criterion(
                     outputs, targets, next_int, int_out,
-                    alpha=self.loss_alpha, beta=self.loss_beta, gamma=self.loss_gamma,
                 )
 
                 loss.backward()
@@ -335,7 +336,7 @@ class SPILSNet:
                 inputs, int_in, targets, int_out = batch
                 outputs, next_int = self._model(inputs, int_in)
                 total_val_loss += self.loss_criterion(
-                    outputs, targets, next_int, int_out, alpha=self.loss_alpha, beta=self.loss_beta
+                    outputs, targets, next_int, int_out
                 ).item()
 
         avg_train_loss = total_train_loss / len(self.train_loader)
@@ -359,7 +360,7 @@ class SPILSNet:
                 stop = True
 
         logger.info(
-            f"Epoch {epoch + 1}/{self.num_epochs} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f} | Best Val Loss: {self.best_val_loss:.6f} | Best Epoch: {self.best_epoch}"
+            f"Epoch {epoch + 1}/{self.num_epochs} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f} | Best Val Loss: {self.best_val_loss:.6f} | Best Epoch: {self.best_epoch + 1}"
         )
 
         return stop, patience_counter, avg_val_loss

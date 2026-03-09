@@ -2,9 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
-from typing import List, Tuple, Any, Optional, Union, Dict, Callable
-
-from sklearn.base import clone
+from typing import List, Tuple, Any, Optional, Union, Dict
 
 
 def build_mlp(
@@ -231,7 +229,7 @@ def deserialize_scaler(data: Dict[str, Any]) -> Any:
     """
     if data is None:
         return None
-        
+
     scaler_type = data.get("type")
     if scaler_type == "NoScaler":
         return NoScaler()
@@ -270,11 +268,11 @@ def spils_loss(
     y_t_target: torch.Tensor,
     i_t_pred: torch.Tensor,
     i_t_target: torch.Tensor,
+    n_nodes: int,
+    dimension: int = 2,
     alpha: float = 0.9,
     beta: float = 0.1,
     gamma: float = 0.0,
-    n_nodes: int = 51,
-    dimension: int = 2,
 ) -> torch.Tensor:
     """
     The SPILSNet loss function.
