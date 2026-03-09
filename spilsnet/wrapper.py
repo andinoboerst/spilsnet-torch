@@ -117,7 +117,7 @@ class SPILSNet:
         Args:
             hyperparameters (Dict[str, Any]): Dictionary of hyperparameters.
         """
-        self.learning_rate = hyperparameters.get("learning_rate", 0.001)
+        self.learning_rate = hyperparameters.get("learning_rate", 0.01)
         self.num_epochs = hyperparameters.get("num_epochs", 5000)
         self.weight_decay = hyperparameters.get("weight_decay", 0.01)
         self.batch_size = hyperparameters.get("batch_size", 2048)
