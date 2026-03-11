@@ -11,7 +11,7 @@ SPILSNet is designed for modeling complex dynamical systems where preserving phy
 ## Features
 
 - **Unified Non-Pickle Serialization**: Industry-standard `safetensors` format for weights and metadata (config, scalers), ensuring cross-platform safety and performance.
-- **Physics-Inspired Temporal Dynamics**: GRU-based core for robust state-space modeling.
+- **Physics-derived Temporal Dynamics**: GRU-based core for robust state-space modeling.
 - **Flexible Scaling**: Built-in support for Scikit-learn scalers and custom transformers (e.g., CubeRoot).
 - **Professional Engineering**: Full type hinting, Google-style docstrings, and robust serialization.
 - **Extensible Loss**: Custom `spils_loss` including Laplacian smoothness terms for spatial consistency.
@@ -94,4 +94,4 @@ pytest --cov=spilsnet
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the AGPL 3.0 License - see the [LICENSE](LICENSE) file for details.
