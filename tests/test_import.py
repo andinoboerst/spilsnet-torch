@@ -38,7 +38,8 @@ def test_spilsnet_generic_scaling():
     model = SPILSNet(
         model_config=BASE_MODEL_CONFIG,
         input_scaler_class=StandardScaler(),
-        internal_scaler_class=StandardScaler(),
-        output_scaler_class=StandardScaler()
+        internal_in_scaler_class=StandardScaler(),
+        internal_out_scaler_class=StandardScaler(),
+        output_scaler_class=StandardScaler(),
     )
     assert model is not None

@@ -81,12 +81,14 @@ def test_wrapper_custom_scalers() -> None:
     model = SPILSNet(
         model_config=SMALL_MODEL_CONFIG,
         input_scaler_class=StandardScaler(),
-        internal_scaler_class=StandardScaler(),
+        internal_in_scaler_class=StandardScaler(),
+        internal_out_scaler_class=StandardScaler(),
         output_scaler_class=StandardScaler(),
     )
 
     assert isinstance(model.input_scaler_class, StandardScaler)
-    assert isinstance(model.internal_scaler_class, StandardScaler)
+    assert isinstance(model.internal_in_scaler_class, StandardScaler)
+    assert isinstance(model.internal_out_scaler_class, StandardScaler)
     assert isinstance(model.output_scaler_class, StandardScaler)
 
 

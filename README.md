@@ -62,6 +62,8 @@ model_config = {
 model = SPILSNet(
     model_config=model_config,
     input_scaler_class=StandardScaler(),
+    internal_in_scaler_class=StandardScaler(),
+    internal_out_scaler_class=StandardScaler(),
     output_scaler_class=StandardScaler()
 )
 

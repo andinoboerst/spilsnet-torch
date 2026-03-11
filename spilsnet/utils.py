@@ -111,7 +111,11 @@ class SimulationDataset(Dataset):
         self.data = [torch.tensor(d, dtype=torch.float64).to(device) for d in args]
 
     def __len__(self) -> int:
-        return len(self.data[0])
+        # dataset length should be based on the shortest tensor so that
+        # all components can be indexed without error. this fixes
+        # out-of-bounds errors when some inputs (e.g. internal states) are
+        # shorter than the primary input array.
+        return min(d.shape[0] for d in self.data)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, ...]:
         return tuple(d[idx] for d in self.data)
