@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/spilsnet-torch.svg)](https://pypi.org/project/spilsnet-torch/)
 [![Tests](https://github.com/andinoboerst/spilsnet-torch/actions/workflows/tests.yml/badge.svg)](https://github.com/andinoboerst/spilsnet-torch/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: AGPL](https://img.shields.io/badge/License-AGPL-yellow.svg)](https://opensource.org/licenses/AGPL)
 
 A high-performance PyTorch implementation of **SPILSNet** (Structure-Preserving Input-Output Learning System Network). 
 
