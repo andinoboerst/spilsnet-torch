@@ -4,7 +4,7 @@
 [![Tests](https://github.com/andinoboerst/spilsnet-torch/actions/workflows/tests.yml/badge.svg)](https://github.com/andinoboerst/spilsnet-torch/actions)
 [![License: AGPL](https://img.shields.io/badge/License-AGPL-yellow.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-A high-performance PyTorch implementation of **SPILSNet** (Structure-Preserving Input-Output Learning System Network). 
+A high-performance PyTorch implementation of **SPILSNet** (Spatiotemporal Physics-derived Internal Latent Space Network). 
 
 SPILSNet is designed for modeling complex dynamical systems where preserving physical structure (like spatial relationships and temporal consistency) is critical. It combines convolutional encoders for spatial feature extraction with a Gated Recurrent Unit (GRU) core to capture temporal evolution, while maintaining a learned skip-connection architecture to preserve high-frequency details.
 
