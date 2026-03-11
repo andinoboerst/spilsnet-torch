@@ -1,0 +1,45 @@
+name: Tests
+
+# Run CI for every push/PR to main and feature branches
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Added 3.12 to keep your package modern!
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"] 
+    steps:
+      # Upgraded to v4
+      - uses: actions/checkout@v4 
+      
+      # Upgraded to v5
+      - name: Set up Python
+        uses: actions/setup-python@v5 
+        with:
+          python-version: ${{ matrix.python-version }}
+          # Optional: caches pip to make your tests run faster
+          cache: 'pip' 
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # This installs your package plus the [dev] dependencies from pyproject.toml
+          pip install .[dev] 
+          
+      - name: Run tests
+        # Note: Check if your python folder is named `spilsnet` or `spilsnet_torch`. 
+        # Update the --cov flag below to match your exact python folder name.
+        run: |
+          pytest --cov=spilsnet 
+          
+      - name: Upload coverage to Codecov
+        # Upgraded to v4
+        uses: codecov/codecov-action@v4 
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
