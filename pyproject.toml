@@ -30,6 +30,7 @@ dependencies = [
     "numpy",
     "scikit-learn",
     "safetensors",
+    "torch-geometric",
 ]
 
 [project.optional-dependencies]

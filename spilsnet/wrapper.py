@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from safetensors.torch import save_file, load_file
-from spilsnet.models import SPILSNetCore
+from spilsnet.models import SPILSNetCore, GraphSPILSNetCore, GraphUNetSPILSNetCore
 from spilsnet.utils import (
     scale_data,
     SimulationDataset,
@@ -110,7 +110,9 @@ class SPILSNet:
 
         self.set_hyperparameters(hyperparameters or {})
 
-        self._model = SPILSNetCore(model_config)
+        # self._model = SPILSNetCore(model_config)
+        # self._model = GraphSPILSNetCore(model_config)
+        self._model = GraphUNetSPILSNetCore(model_config)
         self._model.to(self.device)
 
     def set_hyperparameters(self, hyperparameters: Dict[str, Any]) -> None:
