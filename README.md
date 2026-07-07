@@ -105,7 +105,7 @@ If you use this code in your research, please cite the associated paper and this
 
 ### Paper Citation
 ```bibtex
-@article{boerst2026spilsnet,
+@article{boerst_2026_spilsnet,
   title={Accelerating Transient Structural Dynamics via SPILS-Net, a Physics-Derived Latent Space Subdomain Surrogate},
   author={Börst, Andino and Díez, Pedro and Zlotnik, Sergio and Cavaliere, Fabiola and Curtosi, Gabriel and Larráyoz, Xabier},
   journal={Computer Methods in Applied Mechanics and Engineering},
@@ -117,7 +117,7 @@ If you use this code in your research, please cite the associated paper and this
 ### Software Citation
 (this repository, [spilsnet-torch](https://github.com/andinoboerst/spilsnet-torch), available on [PyPI](https://pypi.org/project/spilsnet-torch/)):
 ```bibtex
-@software{boerst_spilsnet_torch_2026,
+@software{boerst_2026_spilsnet_torch,
   author={Börst, Andino},
   title={spilsnet-torch: PyTorch Implementation of SPILS-Net},
   year={2026},
