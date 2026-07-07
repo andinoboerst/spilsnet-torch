@@ -3,6 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/spilsnet-torch.svg)](https://pypi.org/project/spilsnet-torch/)
 [![Tests](https://github.com/andinoboerst/spilsnet-torch/actions/workflows/tests.yml/badge.svg)](https://github.com/andinoboerst/spilsnet-torch/actions)
 [![License: AGPL](https://img.shields.io/badge/License-AGPL-yellow.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![DOI](https://img.shields.io/badge/DOI-10.1234/zenodo.1234567-blue.svg)](https://doi.org/10.5281/zenodo.21236798)
 
 A high-performance PyTorch implementation of **SPILSNet** (Spatiotemporal Physics-derived Internal Latent Space Network). 
 
