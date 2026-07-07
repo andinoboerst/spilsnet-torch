@@ -97,3 +97,33 @@ pytest --cov=spilsnet
 ## License
 
 This project is licensed under the AGPL 3.0 License - see the [LICENSE](LICENSE) file for details.
+
+## Citation
+
+If you use this code in your research, please cite the associated paper and this repository.
+
+### Paper Citation
+```bibtex
+@article{boerst2026spilsnet,
+  title={Accelerating Transient Structural Dynamics via SPILS-Net, a Physics-Derived Latent Space Subdomain Surrogate},
+  author={Börst, Andino and Díez, Pedro and Zlotnik, Sergio and Cavaliere, Fabiola and Curtosi, Gabriel and Larráyoz, Xabier},
+  journal={Computer Methods in Applied Mechanics and Engineering},
+  year={2026},
+  doi={[DOI — to be added upon publication]}
+}
+```
+
+### Software Citation
+(this repository, [spilsnet-torch](https://github.com/andinoboerst/spilsnet-torch), available on [PyPI](https://pypi.org/project/spilsnet-torch/)):
+```bibtex
+@software{boerst_spilsnet_torch_2026,
+  author={Börst, Andino},
+  title={spilsnet-torch: PyTorch Implementation of SPILS-Net},
+  year={2026},
+  publisher={GitHub},
+  url={https://github.com/andinoboerst/spilsnet-torch},
+  version={1.0.1}
+}
+```
+
+For machine-readable citation metadata, see [`CITATION.cff`](CITATION.cff).
