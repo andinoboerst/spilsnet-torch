@@ -121,7 +121,7 @@ If you use this code in your research, please cite the associated paper and this
   author={Börst, Andino},
   title={spilsnet-torch: PyTorch Implementation of SPILS-Net},
   year={2026},
-  publisher={GitHub},
+  publisher={Zenodo},
   url={https://github.com/andinoboerst/spilsnet-torch},
   doi={10.5281/zenodo.21236781},
   version={1.0.1}
