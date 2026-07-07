@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "A PyTorch implementation of SPILSNet (Spatiotemporal Physics-derived Internal Latent Space Network)"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {file = "LICENSE"}
+license = "AGPL-3.0-or-later"
 authors = [
   {name = "Andino Börst", email = "borst.andino@upc.edu"},
 ]
@@ -20,7 +20,6 @@ keywords = [
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: GNU Affero General Public License v3",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Physics",

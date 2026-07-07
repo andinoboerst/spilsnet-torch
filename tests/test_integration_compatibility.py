@@ -26,9 +26,9 @@ def mock_model_config():
     }
 
 
-def test_predict_with_velocity(mock_model_config):
+def test_predict_with_velocity(mock_model_config, tmp_path):
     """Test that predict handles optional velocity argument correctly."""
-    save_path = "/tmp/test_compat_model"
+    save_path = str(tmp_path / "test_compat_model")
     # Use real MinMaxScaler for testing scaling logic
     from sklearn.preprocessing import MinMaxScaler
 
