@@ -18,7 +18,7 @@ url: "https://pypi.org/project/spilsnet-torch/"
 license: AGPL-3.0
 version: "1.0.1"
 date-released: "2026-07-08"
-doi: "[DOI — to be added upon publication]"
+doi: "10.5281/zenodo.21236497"
 keywords:
   - SPILS-Net
   - SPILSNet
@@ -65,3 +65,4 @@ references:
       Results-reproduction companion repository for the paper, containing
       FEniCSx-based FEM simulation code and neural-network predictor
       wrappers used to generate all numerical results.
+    doi: "10.5281/zenodo.21236528"
