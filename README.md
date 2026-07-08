@@ -3,6 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/spilsnet-torch.svg)](https://pypi.org/project/spilsnet-torch/)
 [![Tests](https://github.com/andinoboerst/spilsnet-torch/actions/workflows/tests.yml/badge.svg)](https://github.com/andinoboerst/spilsnet-torch/actions)
 [![License: AGPL](https://img.shields.io/badge/License-AGPL-yellow.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![DOI](https://img.shields.io/badge/DOI-10.1234/zenodo.1234567-blue.svg)](https://doi.org/10.5281/zenodo.21236798)
 
 A high-performance PyTorch implementation of **SPILSNet** (Spatiotemporal Physics-derived Internal Latent Space Network). 
 
@@ -97,3 +98,34 @@ pytest --cov=spilsnet
 ## License
 
 This project is licensed under the AGPL 3.0 License - see the [LICENSE](LICENSE) file for details.
+
+## Citation
+
+If you use this code in your research, please cite the associated paper and this repository.
+
+### Paper Citation
+```bibtex
+@article{boerst_2026_spilsnet,
+  title={Accelerating Transient Structural Dynamics via SPILS-Net, a Physics-Derived Latent Space Subdomain Surrogate},
+  author={Börst, Andino and Díez, Pedro and Zlotnik, Sergio and Cavaliere, Fabiola and Curtosi, Gabriel and Larráyoz, Xabier},
+  journal={Computer Methods in Applied Mechanics and Engineering},
+  year={2026},
+  doi={[DOI — to be added upon publication]}
+}
+```
+
+### Software Citation
+(this repository, [spilsnet-torch](https://github.com/andinoboerst/spilsnet-torch), available on [PyPI](https://pypi.org/project/spilsnet-torch/)):
+```bibtex
+@software{boerst_2026_spilsnet_torch,
+  author={Börst, Andino},
+  title={spilsnet-torch: PyTorch Implementation of SPILS-Net},
+  year={2026},
+  publisher={Zenodo},
+  url={https://doi.org/10.5281/zenodo.21236780},
+  doi={10.5281/zenodo.21236780},
+  version={1.0.1}
+}
+```
+
+For machine-readable citation metadata, see [`CITATION.cff`](CITATION.cff).

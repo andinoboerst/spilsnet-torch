@@ -1,0 +1,68 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+type: software
+title: "spilsnet-torch: PyTorch Implementation of SPILS-Net"
+abstract: >
+  PyTorch implementation of the SPILSNet (Spatiotemporal Physics-derived
+  Internal Latent Space Network) neural-network architecture, distributed
+  as the spilsnet-torch package on PyPI. Companion package to the
+  SPILS-Net results-reproduction repository for the paper
+  "Accelerating Transient Structural Dynamics via SPILS-Net, a
+  Physics-Derived Latent Space Subdomain Surrogate".
+authors:
+  - family-names: "Börst"
+    given-names: "Andino"
+    orcid: "https://orcid.org/0009-0005-0222-3851"
+repository-code: "https://github.com/andinoboerst/spilsnet-torch"
+url: "https://pypi.org/project/spilsnet-torch/"
+license: AGPL-3.0
+version: "1.0.1"
+date-released: "2026-07-08"
+doi: "10.5281/zenodo.21236781"
+keywords:
+  - SPILS-Net
+  - SPILSNet
+  - neural-network surrogate
+  - physics-informed machine learning
+  - PyTorch
+  - dynamical systems
+  - structural dynamics
+  - scientific machine learning
+preferred-citation:
+  type: article
+  title: >
+    Accelerating Transient Structural Dynamics via SPILS-Net, a Physics-Derived Latent Space Subdomain Surrogate
+  authors:
+    - family-names: "Börst"
+      given-names: "Andino"
+      orcid: "https://orcid.org/0009-0005-0222-3851"
+    - family-names: "Díez"
+      given-names: "Pedro"
+    - family-names: "Zlotnik"
+      given-names: "Sergio"
+    - family-names: "Cavaliere"
+      given-names: "Fabiola"
+    - family-names: "Curtosi"
+      given-names: "Gabriel"
+    - family-names: "Larráyoz"
+      given-names: "Xabier"
+  journal: "Computer Methods in Applied Mechanics and Engineering"
+  year: 2026
+  doi: "[DOI — to be added upon publication]"
+
+references:
+  - type: software
+    title: "SPILS-Net — Results Reproduction Repository"
+    authors:
+      - family-names: "Börst"
+        given-names: "Andino"
+        orcid: "https://orcid.org/0009-0005-0222-3851"
+    repository-code: "https://github.com/andinoboerst/SPILS-Net"
+    version: "1.0.0"
+    year: 2026
+    license: AGPL-3.0
+    abstract: >
+      Results-reproduction companion repository for the paper, containing
+      FEniCSx-based FEM simulation code and neural-network predictor
+      wrappers used to generate all numerical results.
+    doi: "10.5281/zenodo.21236798"
