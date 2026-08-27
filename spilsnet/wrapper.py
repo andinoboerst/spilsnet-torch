@@ -4,7 +4,7 @@ import json
 import random
 import os
 from functools import partial
-from typing import Dict, Any, Optional, Tuple, Callable
+from typing import Dict, Any, Optional, Tuple, Callable, Union
 
 import torch
 import torch.nn as nn
@@ -702,3 +702,349 @@ class SPILSNet:
             return instance
 
         raise FileNotFoundError(f"Could not find model at {path} in either .safetensors or legacy .pth/.pkl format.")
+
+
+from spilsnet.models_gnn import SPILSNetGraphCore
+from spilsnet.utils import connectivity_to_edge_index
+
+
+class SPILSNetGraph(SPILSNet):
+    """
+    Graph Neural Network Wrapper for SPILSNet (2D interface with unstructured nodes in 3D domain).
+    """
+
+    def __init__(
+        self,
+        edge_index: Optional[Union[torch.Tensor, np.ndarray]] = None,
+        connectivity: Optional[np.ndarray] = None,
+        save_path: str = "spilsnet_graph_model",
+        input_scaler_class: Any = None,
+        internal_in_scaler_class: Any = None,
+        internal_out_scaler_class: Any = None,
+        output_scaler_class: Any = None,
+        output_transformer: Any = NoTransformer,
+        loss_fn: Callable = spils_loss,
+        scheduler_class: type = ReduceLROnPlateau,
+        scheduler_kwargs: Optional[Dict[str, Any]] = None,
+        hyperparameters: Optional[Dict[str, Any]] = None,
+        model_config: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if model_config is None:
+            raise ValueError("model_config must be provided.")
+
+        self.model_config = model_config
+        self.input_size = model_config["input_size"]
+        self.problem_dimension = model_config.get("dimension", 3)
+        self.save_path = save_path
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.input_scaler_class = input_scaler_class
+        self.internal_in_scaler_class = internal_in_scaler_class
+        self.internal_out_scaler_class = internal_out_scaler_class
+        self.output_scaler_class = output_scaler_class
+        self.output_transform = output_transformer.transform
+        self.output_inverse_transform = output_transformer.inverse_transform
+        self.loss_fn = loss_fn
+
+        self.scheduler_class = scheduler_class
+        self.scheduler_kwargs = scheduler_kwargs or {
+            "mode": "min",
+            "factor": 0.5,
+            "patience": 20,
+        }
+
+        self.curr_epoch = 0
+        self.best_epoch = 0
+        self.best_val_loss = float("inf")
+        self.optimizer_state_dict = None
+
+        self.set_hyperparameters(hyperparameters or {})
+
+        if edge_index is not None:
+            if isinstance(edge_index, np.ndarray):
+                edge_index = torch.tensor(edge_index, dtype=torch.long)
+            self.edge_index = edge_index.to(self.device)
+        elif connectivity is not None:
+            self.edge_index = connectivity_to_edge_index(connectivity).to(self.device)
+        else:
+            self.edge_index = None
+
+        self._model = SPILSNetGraphCore(model_config)
+        self._model.to(self.device)
+
+    def _train_loop(self) -> None:
+        patience_counter = 0
+
+        for epoch in range(self.curr_epoch, self.num_epochs):
+            self.curr_epoch = epoch
+            self._model.train()
+            total_train_loss = 0.0
+
+            for batch in self.train_loader:
+                inputs, int_in, targets, int_out = batch
+                self.optimizer.zero_grad()
+
+                outputs, next_int = self._model(inputs, int_in, edge_index=self.edge_index)
+                loss = self.loss_criterion(outputs, targets, next_int, int_out)
+
+                loss.backward()
+                nn.utils.clip_grad_norm_(self._model.parameters(), max_norm=1.0)
+                self.optimizer.step()
+
+                total_train_loss += loss.item()
+
+            stop_early, patience_counter, total_val_loss = self._validate_epoch(
+                epoch, total_train_loss, patience_counter
+            )
+
+            if isinstance(self.scheduler, ReduceLROnPlateau):
+                self.scheduler.step(total_val_loss)
+            else:
+                self.scheduler.step()
+
+            if total_train_loss > 1e6:
+                logger.warning("Training diverged. Stopping.")
+                break
+
+            if stop_early:
+                break
+
+        logger.info("Training finished!")
+        if getattr(self, "test_loader", None) is not None:
+            self.calculate_test_metrics()
+
+    def _validate_epoch(self, epoch: int, total_train_loss: float, patience_counter: int) -> Tuple[bool, int, float]:
+        self._model.eval()
+        total_val_loss = 0.0
+        with torch.no_grad():
+            for batch in self.val_loader:
+                inputs, int_in, targets, int_out = batch
+                outputs, next_int = self._model(inputs, int_in, edge_index=self.edge_index)
+                total_val_loss += self.loss_criterion(outputs, targets, next_int, int_out).item()
+
+        avg_train_loss = total_train_loss / len(self.train_loader)
+        avg_val_loss = total_val_loss / len(self.val_loader)
+
+        self.optimizer_state_dict = self.optimizer.state_dict()
+        self.save(self.save_path)
+
+        stop = False
+        if avg_val_loss < self.best_val_loss:
+            patience_counter = 0
+            self.best_val_loss = avg_val_loss
+            self.best_epoch = epoch
+            self.save(f"{self.save_path}_best")
+        else:
+            patience_counter += 1
+            if patience_counter >= self.early_stop_patience:
+                logger.info(f"Early stopping triggered at epoch {epoch + 1}")
+                stop = True
+
+        msg = f"Epoch {epoch + 1}/{self.num_epochs} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f} | Best Val Loss: {self.best_val_loss:.6f} | Best Epoch: {self.best_epoch + 1}"
+        logger.info(msg)
+
+        return stop, patience_counter, avg_val_loss
+
+    def calculate_test_metrics(self) -> None:
+        self._model.eval()
+        all_y_pred, all_y_true = [], []
+        all_i_pred_delta, all_i_true_delta = [], []
+
+        with torch.no_grad():
+            for batch in self.test_loader:
+                inputs, int_in, targets, int_out = batch
+                outputs, next_int_delta = self._model(inputs, int_in, edge_index=self.edge_index)
+
+                all_y_pred.append(outputs.cpu().numpy())
+                all_y_true.append(targets.cpu().numpy())
+                all_i_pred_delta.append(next_int_delta.cpu().numpy())
+                all_i_true_delta.append(int_out.cpu().numpy())
+
+        y_pred_scaled = np.concatenate(all_y_pred, axis=0)
+        y_true_scaled = np.concatenate(all_y_true, axis=0)
+        i_pred_delta_scaled_out = np.concatenate(all_i_pred_delta, axis=0)
+        i_true_delta_scaled_out = np.concatenate(all_i_true_delta, axis=0)
+
+        y_pred_raw = self.output_inverse_transform(self.output_scaler.inverse_transform(y_pred_scaled))
+        y_true_raw = self.output_inverse_transform(self.output_scaler.inverse_transform(y_true_scaled))
+
+        l1_F = np.mean(np.abs(y_pred_raw - y_true_raw))
+        rel_l1_F = l1_F / (np.mean(np.abs(y_true_raw)) + 1e-10)
+
+        i_pred_delta_scaled_state = self.internal_out_scaler.inverse_transform(i_pred_delta_scaled_out)
+        i_true_delta_scaled_state = self.internal_out_scaler.inverse_transform(i_true_delta_scaled_out)
+
+        it_scale = getattr(self.internal_scaler, "scale_", 1.0)
+        i_pred_delta_raw = i_pred_delta_scaled_state / it_scale
+        i_true_delta_raw = i_true_delta_scaled_state / it_scale
+
+        l1_i = np.mean(np.abs(i_pred_delta_raw - i_true_delta_raw))
+        mse_scaled = np.mean((y_pred_scaled - y_true_scaled) ** 2)
+
+        msg = f"Test Set Metrics (Best Epoch: {self.best_epoch + 1}): MSE={mse_scaled:.8f}, L1 Force={l1_F:.8f} (Rel={rel_l1_F:.2%}), L1 Internal={l1_i:.8f}"
+        logger.info(msg)
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        self._model.eval()
+        x_norm = self.input_scaler.transform(np.array(x).reshape(1, -1))
+        x_tensor = torch.tensor(x_norm, dtype=torch.float64, device=self.device)
+
+        with torch.no_grad():
+            pred_scaled, internal_delta_scaled = self._model(x_tensor, self.hidden_state, edge_index=self.edge_index)
+
+            delta_np = internal_delta_scaled.cpu().numpy()
+            delta_unscaled = self.internal_out_scaler.inverse_transform(delta_np)
+            self.hidden_state += torch.tensor(delta_unscaled, dtype=torch.float64, device=self.device)
+
+            pred_np = pred_scaled.cpu().numpy().reshape(1, -1)
+            y_unscaled = self.output_scaler.inverse_transform(pred_np)[0]
+            y_final = self.output_inverse_transform(y_unscaled)
+
+        self.num_steps_predicted += 1
+        return y_final
+
+    def save(self, path: str) -> None:
+        path = str(path)
+        if not path.endswith(".safetensors"):
+            path = f"{path}.safetensors"
+
+        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+
+        metadata = {
+            "model_config": json.dumps(self.model_config),
+            "hyperparameters": json.dumps(
+                {
+                    "learning_rate": self.learning_rate,
+                    "num_epochs": self.num_epochs,
+                    "weight_decay": self.weight_decay,
+                    "batch_size": self.batch_size,
+                    "early_stop_patience": self.early_stop_patience,
+                    "loss_alpha": self.loss_alpha,
+                    "loss_beta": self.loss_beta,
+                    "loss_gamma": self.loss_gamma,
+                }
+            ),
+            "training_state": json.dumps(
+                {
+                    "best_val_loss": self.best_val_loss,
+                    "best_epoch": self.best_epoch,
+                    "curr_epoch": self.curr_epoch,
+                }
+            ),
+            "scalers": json.dumps(
+                {
+                    "input": serialize_scaler(self.input_scaler) if hasattr(self, "input_scaler") else None,
+                    "internal": serialize_scaler(self.internal_scaler) if hasattr(self, "internal_scaler") else None,
+                    "internal_out": serialize_scaler(self.internal_out_scaler)
+                    if hasattr(self, "internal_out_scaler")
+                    else None,
+                    "output": serialize_scaler(self.output_scaler) if hasattr(self, "output_scaler") else None,
+                }
+            ),
+            "initial_state": json.dumps(
+                self.raw_initial_internal_state.tolist() if hasattr(self, "raw_initial_internal_state") else None
+            ),
+        }
+
+        tensors = {k: v.contiguous() for k, v in self._model.state_dict().items()}
+        if self.edge_index is not None:
+            tensors["edge_index"] = self.edge_index.contiguous().cpu()
+
+        if hasattr(self, "optimizer"):
+            opt_state = self.optimizer.state_dict()
+            for i, group in enumerate(opt_state["param_groups"]):
+                for key, val in group.items():
+                    if isinstance(val, torch.Tensor):
+                        tensors[f"optimizer.param_groups.{i}.{key}"] = val.contiguous()
+
+            for key, val in opt_state["state"].items():
+                for subkey, subval in val.items():
+                    if isinstance(subval, torch.Tensor):
+                        tensors[f"optimizer.state.{key}.{subkey}"] = subval.contiguous()
+
+        save_file(tensors, path, metadata=metadata)
+        logger.info(f"Model saved to {path} (Safetensors format)")
+
+    @classmethod
+    def load(cls, path: str) -> "SPILSNetGraph":
+        from safetensors import safe_open
+
+        path = str(path)
+        st_path = path if path.endswith(".safetensors") else f"{path}.safetensors"
+        if os.path.exists(st_path):
+            tensors = load_file(st_path)
+            with safe_open(st_path, framework="pt") as f_safe:
+                metadata = f_safe.metadata()
+
+            if not metadata:
+                raise ValueError(f"No metadata found in {st_path}")
+
+            model_config = json.loads(metadata["model_config"])
+            hyperparameters = json.loads(metadata["hyperparameters"])
+            training_state = json.loads(metadata["training_state"])
+            scalers_data = json.loads(metadata["scalers"])
+            initial_state_data = json.loads(metadata["initial_state"])
+
+            edge_index = tensors.pop("edge_index", None)
+
+            instance = cls(
+                edge_index=edge_index,
+                save_path=os.path.splitext(st_path)[0],
+                model_config=model_config,
+                hyperparameters=hyperparameters,
+            )
+
+            model_tensors = {}
+            optimizer_tensors = {}
+            for k, v in tensors.items():
+                if k.startswith("optimizer."):
+                    optimizer_tensors[k] = v
+                else:
+                    model_tensors[k] = v
+
+            instance._model.load_state_dict(model_tensors)
+
+            instance.best_val_loss = training_state["best_val_loss"]
+            instance.best_epoch = training_state["best_epoch"]
+            instance.curr_epoch = training_state["curr_epoch"]
+
+            instance.input_scaler = deserialize_scaler(scalers_data["input"])
+            instance.internal_scaler = deserialize_scaler(scalers_data["internal"])
+            instance.internal_out_scaler = deserialize_scaler(scalers_data["internal_out"])
+            instance.output_scaler = deserialize_scaler(scalers_data["output"])
+
+            if optimizer_tensors:
+                opt_state = {"param_groups": [], "state": {}}
+                group_indices = sorted(list(set([int(k.split(".")[2]) for k in optimizer_tensors if "param_groups" in k])))
+                for i in group_indices:
+                    group = {}
+                    prefix = f"optimizer.param_groups.{i}."
+                    for k, v in optimizer_tensors.items():
+                        if k.startswith(prefix):
+                            group[k[len(prefix):]] = v
+                    opt_state["param_groups"].append(group)
+
+                state_ids = sorted(list(set([k.split(".")[2] for k in optimizer_tensors if "state" in k])))
+                for sid in state_ids:
+                    state_id = int(sid)
+                    opt_state["state"][state_id] = {}
+                    prefix = f"optimizer.state.{sid}."
+                    for k, v in optimizer_tensors.items():
+                        if k.startswith(prefix):
+                            opt_state["state"][state_id][k[len(prefix):]] = v
+
+                instance.optimizer_state_dict = opt_state
+
+            if initial_state_data is not None:
+                instance.raw_initial_internal_state = np.array(initial_state_data)
+                initial_state_scaled = instance.internal_scaler.transform(
+                    instance.raw_initial_internal_state.reshape(1, -1)
+                )
+                instance.initial_internal_state = torch.tensor(
+                    initial_state_scaled, dtype=torch.float64, device=instance.device
+                )
+
+            logger.info(f"Model loaded from {st_path} (Safetensors)")
+            return instance
+
+        raise FileNotFoundError(f"Could not find model at {path}")

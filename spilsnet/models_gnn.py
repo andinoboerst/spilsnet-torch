@@ -4,12 +4,12 @@ from typing import Dict, Any, Tuple, Optional
 
 try:
     from torch_geometric.nn import GCNConv, SAGEConv, global_mean_pool
-    from torch_geometric.data import Data, Batch
     HAS_PYG = True
 except ImportError:
     HAS_PYG = False
 
 from spilsnet.utils import build_mlp
+
 
 class SPILSNetGraphCore(nn.Module):
     """
@@ -30,19 +30,27 @@ class SPILSNetGraphCore(nn.Module):
         dtype_str = config.get("dtype", "float64")
         self.dtype = torch.float64 if dtype_str == "float64" else torch.float32
 
-        # --- 1. ENCODER (Graph Convolutions) ---
+        # --- 1. ENCODER (Graph Convolutions - Entry Layer) ---
         self.encoder_stack = nn.ModuleList()
         current_in = self.dim
         
-        # E.g. [{"out": 32}, {"out": 64}]
-        for layer_cfg in config.get("encoder_structure", [{"out": 32}, {"out": 64}]):
+        conv_type = config.get("conv_type", "SAGE").upper()
+        encoder_structure = config.get("encoder_structure", [{"out": 32}, {"out": 64}])
+        
+        for layer_cfg in encoder_structure:
+            out_dim = layer_cfg["out"]
+            if conv_type == "GCN":
+                conv_layer = GCNConv(current_in, out_dim)
+            else:
+                conv_layer = SAGEConv(current_in, out_dim)
+                
             block = nn.ModuleList([
-                SAGEConv(current_in, layer_cfg["out"]),
+                conv_layer,
                 nn.Tanh(),
                 nn.Dropout(self.drop_p) if self.drop_p > 0 else nn.Identity(),
             ])
             self.encoder_stack.append(block)
-            current_in = layer_cfg["out"]
+            current_in = out_dim
 
         self.skip_target_nodes = config.get("skip_target_nodes", 3)
 
@@ -91,53 +99,73 @@ class SPILSNetGraphCore(nn.Module):
             dtype=self.dtype,
         )
 
-    def forward(self, x_in: torch.Tensor, edge_index: torch.Tensor, internal_state: torch.Tensor, batch: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        # --- 5. DECODER GRAPH CONVOLUTION (Exit Layer for unstructured nodes) ---
+        self.use_decoder_conv = config.get("use_decoder_conv", True)
+        if self.use_decoder_conv:
+            if conv_type == "GCN":
+                self.decoder_conv = GCNConv(self.dim, self.dim)
+            else:
+                self.decoder_conv = SAGEConv(self.dim, self.dim)
+        else:
+            self.decoder_conv = None
+
+        self.to(self.dtype)
+
+    def forward(
+        self,
+        x_in: torch.Tensor,
+        internal_state: torch.Tensor,
+        edge_index: Optional[torch.Tensor] = None,
+        batch: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass using PyTorch Geometric.
+        Forward pass using PyTorch Geometric graph convolutions for entry/exit layers.
 
         Args:
-            x_in: Node features of shape [Batch * Nodes, Dim] or [Batch, Nodes*Dim]. 
-                  If [Batch, Nodes*Dim], will be reshaped.
-            edge_index: Graph connectivity [2, Num_Edges].
-            internal_state: Physics core hidden states [Batch, InternalStateSize].
-            batch: Batch vector [Batch * Nodes]. 
+            x_in: Node features [Batch, Nodes * Dim] or [Batch * Nodes, Dim].
+            internal_state: Physics core hidden state [Batch, InternalStateSize].
+            edge_index: Graph topology edge index [2, Num_Edges].
+            batch: PyG batch vector [Batch * Nodes].
 
         Returns:
-            out_flat: Predicted nodal vector [Batch, Nodes*Dim]
+            out_flat: Predicted nodal forces [Batch, Nodes * Dim]
             internal_next: Next internal state [Batch, InternalStateSize]
         """
         batch_size = internal_state.size(0)
-        
-        # Reshape [Batch, Nodes*Dim] -> [Batch * Nodes, Dim]
+
         if x_in.dim() == 2 and x_in.size(1) == self.n_nodes * self.dim:
             x = x_in.view(batch_size * self.n_nodes, self.dim)
-            if batch is None:
-                # Create a simple batch index if not provided
-                batch = torch.arange(batch_size, device=x.device).repeat_interleave(self.n_nodes)
         else:
             x = x_in
-            if batch is None:
-                raise ValueError("batch tensor must be provided if x_in is not [Batch, Nodes*Dim]")
 
-        # 1. GNN Encoder Pass
+        if batch is None:
+            batch = torch.arange(batch_size, device=x.device).repeat_interleave(self.n_nodes)
+
+        if edge_index is not None and edge_index.numel() > 0:
+            if batch_size > 1:
+                offsets = torch.arange(batch_size, device=edge_index.device).repeat_interleave(edge_index.size(1)) * self.n_nodes
+                batch_edge_index = edge_index.repeat(1, batch_size) + offsets
+            else:
+                batch_edge_index = edge_index
+        else:
+            batch_edge_index = torch.empty((2, 0), dtype=torch.long, device=x.device)
+
+        # 1. GNN Encoder Pass (Entry Layer)
         curr = x
         for conv, act, drop in self.encoder_stack:
-            curr = conv(curr, edge_index)
+            curr = conv(curr, batch_edge_index)
             curr = act(curr)
             curr = drop(curr)
 
-        # 2. Bottleneck
-        # Global mean pool across nodes in each graph -> [Batch, current_in]
-        pooled = global_mean_pool(curr, batch)
+        # 2. Bottleneck Pooling & Skip Connections
+        pooled = global_mean_pool(curr, batch)  # [Batch, current_in]
         gru_input = self.latent_enc(pooled).unsqueeze(0)  # [1, Batch, latent_dim]
 
-        # Learned Skip Connection
-        # Reshape features to [Batch, current_in, Nodes]
-        curr_reshaped = curr.view(batch_size, self.n_nodes, -1).permute(0, 2, 1)
+        curr_reshaped = curr.view(batch_size, self.n_nodes, -1).permute(0, 2, 1)  # [Batch, current_in, Nodes]
         learned_skip = self.spatial_downsampler(curr_reshaped)  # [Batch, current_in, skip_target_nodes]
         skip_connection = learned_skip.flatten(1)  # [Batch, current_in * skip_target_nodes]
 
-        # 3. GRU Initialization & Step
+        # 3. GRU Step (Physics Core)
         h_flat = torch.tanh(self.internal_in(internal_state))
         h_0 = h_flat.view(batch_size, self.gru_layers, self.gru_hidden).permute(1, 0, 2).contiguous()
 
@@ -148,8 +176,14 @@ class SPILSNetGraphCore(nn.Module):
 
         # 4. Global Projection
         global_input = torch.cat([h_last, skip_connection], dim=1)
-        
-        # Output [Batch, Nodes * Dim]
-        raw_force = self.latent_decoder(global_input)
+        raw_force = self.latent_decoder(global_input)  # [Batch, Nodes * Dim]
 
-        return raw_force, internal_next
+        # 5. GNN Decoder Pass (Exit Layer)
+        if self.decoder_conv is not None and batch_edge_index.numel() > 0:
+            raw_force_nodes = raw_force.view(batch_size * self.n_nodes, self.dim)
+            decoded_nodes = torch.tanh(self.decoder_conv(raw_force_nodes, batch_edge_index))
+            out_flat = decoded_nodes.view(batch_size, self.n_nodes * self.dim)
+        else:
+            out_flat = raw_force
+
+        return out_flat, internal_next
