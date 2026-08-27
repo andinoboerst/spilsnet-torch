@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spilsnet-torch"
-version = "1.0.1"
+version = "1.0.2"
 description = "A PyTorch implementation of SPILSNet (Spatiotemporal Physics-derived Internal Latent Space Network)"
 readme = "README.md"
 requires-python = ">=3.8"
