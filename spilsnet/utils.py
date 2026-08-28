@@ -319,3 +319,27 @@ def spils_loss(
         loss_s = torch.tensor(0.0, device=y_t_pred.device, dtype=y_t_pred.dtype)
 
     return (alpha * loss_F) + (beta * loss_i) + (gamma * loss_s)
+
+
+def connectivity_to_edge_index(connectivity: np.ndarray) -> torch.Tensor:
+    """
+    Convert triangular mesh connectivity matrix [N_faces, 3] to PyG edge_index [2, N_edges].
+
+    Args:
+        connectivity (np.ndarray): Mesh connectivity matrix.
+
+    Returns:
+        torch.Tensor: PyTorch LongTensor of shape [2, N_edges].
+    """
+    connectivity = np.asarray(connectivity)
+    edges = []
+    for face in connectivity:
+        n0, n1, n2 = face[0], face[1], face[2]
+        edges.extend([
+            (n0, n1), (n1, n0),
+            (n1, n2), (n2, n1),
+            (n2, n0), (n0, n2)
+        ])
+    unique_edges = sorted(list(set(edges)))
+    edge_index = torch.tensor(unique_edges, dtype=torch.long).t().contiguous()
+    return edge_index
