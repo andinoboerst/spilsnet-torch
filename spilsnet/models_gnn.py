@@ -1,6 +1,7 @@
+import numpy as np
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, Union
 
 try:
     from torch_geometric.nn import GCNConv, SAGEConv, global_mean_pool
@@ -17,7 +18,11 @@ class SPILSNetGraphCore(nn.Module):
     for unstructured meshes (e.g. 2D interface in 3D domain).
     """
 
-    def __init__(self, config: Dict[str, Any]) -> None:
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        node_coordinates: Optional[Union[torch.Tensor, np.ndarray]] = None,
+    ) -> None:
         super().__init__()
         
         if not HAS_PYG:
@@ -30,9 +35,20 @@ class SPILSNetGraphCore(nn.Module):
         dtype_str = config.get("dtype", "float64")
         self.dtype = torch.float64 if dtype_str == "float64" else torch.float32
 
+        if node_coordinates is not None:
+            if not isinstance(node_coordinates, torch.Tensor):
+                coords_tensor = torch.tensor(node_coordinates, dtype=self.dtype)
+            else:
+                coords_tensor = node_coordinates.to(dtype=self.dtype)
+            self.register_buffer("node_coordinates", coords_tensor)
+            self.coord_dim = coords_tensor.size(1)
+        else:
+            self.node_coordinates = None
+            self.coord_dim = 0
+
         # --- 1. ENCODER (Graph Convolutions - Entry Layer) ---
         self.encoder_stack = nn.ModuleList()
-        current_in = self.dim
+        current_in = self.dim + self.coord_dim
         
         conv_type = config.get("conv_type", "SAGE").upper()
         encoder_structure = config.get("encoder_structure", [{"out": 32}, {"out": 64}])
@@ -151,7 +167,12 @@ class SPILSNetGraphCore(nn.Module):
             batch_edge_index = torch.empty((2, 0), dtype=torch.long, device=x.device)
 
         # 1. GNN Encoder Pass (Entry Layer)
-        curr = x
+        if hasattr(self, "node_coordinates") and self.node_coordinates is not None:
+            coords_batch = self.node_coordinates.repeat(batch_size, 1)
+            curr = torch.cat([x, coords_batch], dim=1)
+        else:
+            curr = x
+
         for conv, act, drop in self.encoder_stack:
             curr = conv(curr, batch_edge_index)
             curr = act(curr)

@@ -12,6 +12,7 @@ SPILSNet is designed for modeling complex dynamical systems where preserving phy
 ## Features
 
 - **Unified Non-Pickle Serialization**: Industry-standard `safetensors` format for weights and metadata (config, scalers), ensuring cross-platform safety and performance.
+- **Graph Neural Network (PyG) Integration**: `SPILSNetGraph` architecture for handling 3D unstructured meshes and arbitrary domain interface topologies using Graph Convolutions (GraphSAGE / GCN).
 - **Physics-derived Temporal Dynamics**: GRU-based core for robust state-space modeling.
 - **Flexible Scaling**: Built-in support for Scikit-learn scalers and custom transformers (e.g., CubeRoot).
 - **Professional Engineering**: Full type hinting, Google-style docstrings, and robust serialization.
@@ -34,6 +35,8 @@ pip install -e ".[dev]"
 ```
 
 ## Quick Start
+
+### 1. Standard 2D Structured Model (Convolutional Encoder)
 
 ```python
 import numpy as np
@@ -76,6 +79,72 @@ model.fit(X, Y, I)
 # 4. Sequential Inference
 model.initialize_memory_variables()
 current_x = np.random.randn(102)
+next_y = model.predict(current_x)
+
+print(f"Predicted next state shape: {next_y.shape}")
+```
+
+### 2. 3D Unstructured Mesh / Interface Model (Graph Neural Network Encoder)
+
+```python
+import numpy as np
+import torch
+from spilsnet import SPILSNetGraph, connectivity_to_edge_index
+from sklearn.preprocessing import StandardScaler
+
+# 1. Define mesh element connectivity & node spatial coordinates
+# connectivity shape: [Num_Elements, Nodes_Per_Element] (0-indexed node indices)
+connectivity = np.array([
+    [0, 1, 2],
+    [1, 2, 3],
+    [2, 3, 4]
+])
+edge_index = connectivity_to_edge_index(connectivity)
+
+# Optional: pass static node spatial coordinates [Num_Nodes, Coord_Dim] for GNN spatial awareness
+node_coordinates = np.random.randn(50, 3)
+
+# 2. Configure the GNN architecture
+model_config = {
+    "dimension": 3,                # 3D nodal state features (x, y, z)
+    "input_size": 150,             # 50 nodes * 3 dimensions
+    "internal_state_size": 16,
+    "conv_type": "SAGE",           # GraphSAGE ("SAGE") or GCN ("GCN")
+    "encoder_structure": [
+        {"out": 32},
+        {"out": 64},
+    ],
+    "skip_target_nodes": 4,
+    "latent_dim": 32,
+    "gru_hidden_size": 64,
+    "latent_encoder_mlp": [64, 64],
+    "internal_input_mlp": [32],
+    "internal_output_mlp": [32],
+    "latent_decoder_structure": [256, 512],
+    "use_decoder_conv": True,
+    "dropout_rate": 0.1,
+}
+
+# 3. Initialize SPILSNetGraph (with optional node_coordinates)
+model = SPILSNetGraph(
+    edge_index=edge_index,
+    node_coordinates=node_coordinates,
+    model_config=model_config,
+    input_scaler_class=StandardScaler(),
+    internal_in_scaler_class=StandardScaler(),
+    internal_out_scaler_class=StandardScaler(),
+    output_scaler_class=StandardScaler()
+)
+
+# 4. Fit the model
+X = np.random.randn(10, 50, 150)
+Y = np.random.randn(10, 50, 150)
+I = np.random.randn(10, 50, 16)
+model.fit(X, Y, I)
+
+# 5. Sequential Inference
+model.initialize_memory_variables()
+current_x = np.random.randn(150)
 next_y = model.predict(current_x)
 
 print(f"Predicted next state shape: {next_y.shape}")
@@ -124,7 +193,7 @@ If you use this code in your research, please cite the associated paper and this
   publisher={Zenodo},
   url={https://doi.org/10.5281/zenodo.21236780},
   doi={10.5281/zenodo.21236780},
-  version={1.0.1}
+  version={1.1.0}
 }
 ```
 

@@ -717,6 +717,7 @@ class SPILSNetGraph(SPILSNet):
         self,
         edge_index: Optional[Union[torch.Tensor, np.ndarray]] = None,
         connectivity: Optional[np.ndarray] = None,
+        node_coordinates: Optional[Union[torch.Tensor, np.ndarray]] = None,
         save_path: str = "spilsnet_graph_model",
         input_scaler_class: Any = None,
         internal_in_scaler_class: Any = None,
@@ -769,7 +770,14 @@ class SPILSNetGraph(SPILSNet):
         else:
             self.edge_index = None
 
-        self._model = SPILSNetGraphCore(model_config)
+        if node_coordinates is not None:
+            if isinstance(node_coordinates, np.ndarray):
+                node_coordinates = torch.tensor(node_coordinates, dtype=torch.float64)
+            self.node_coordinates = node_coordinates.to(self.device)
+        else:
+            self.node_coordinates = None
+
+        self._model = SPILSNetGraphCore(model_config, node_coordinates=self.node_coordinates)
         self._model.to(self.device)
 
     def _train_loop(self) -> None:
@@ -986,9 +994,11 @@ class SPILSNetGraph(SPILSNet):
             initial_state_data = json.loads(metadata["initial_state"])
 
             edge_index = tensors.pop("edge_index", None)
+            node_coordinates = tensors.get("node_coordinates", None)
 
             instance = cls(
                 edge_index=edge_index,
+                node_coordinates=node_coordinates,
                 save_path=os.path.splitext(st_path)[0],
                 model_config=model_config,
                 hyperparameters=hyperparameters,
