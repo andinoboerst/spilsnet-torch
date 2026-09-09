@@ -18,6 +18,7 @@ from spilsnet.utils import (
     SimulationDataset,
     NoTransformer,
     spils_loss,
+    spils_loss_3d,
     serialize_scaler,
     deserialize_scaler,
 )
@@ -724,7 +725,7 @@ class SPILSNetGraph(SPILSNet):
         internal_out_scaler_class: Any = None,
         output_scaler_class: Any = None,
         output_transformer: Any = NoTransformer,
-        loss_fn: Callable = spils_loss,
+        loss_fn: Callable = spils_loss_3d,
         scheduler_class: type = ReduceLROnPlateau,
         scheduler_kwargs: Optional[Dict[str, Any]] = None,
         hyperparameters: Optional[Dict[str, Any]] = None,
@@ -779,6 +780,22 @@ class SPILSNetGraph(SPILSNet):
 
         self._model = SPILSNetGraphCore(model_config, node_coordinates=self.node_coordinates)
         self._model.to(self.device)
+
+    def _setup_training(self) -> None:
+        """
+        Setup optimizer, scheduler, and loss criterion with graph connectivity and coordinates.
+        """
+        super()._setup_training()
+        self.loss_criterion = partial(
+            self.loss_fn,
+            n_nodes=self.n_nodes,
+            dimension=self.problem_dimension,
+            alpha=self.loss_alpha,
+            beta=self.loss_beta,
+            gamma=self.loss_gamma,
+            edge_index=self.edge_index,
+            pos=self.node_coordinates,
+        )
 
     def _train_loop(self) -> None:
         patience_counter = 0

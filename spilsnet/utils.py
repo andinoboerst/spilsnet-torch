@@ -279,23 +279,31 @@ def spils_loss(
     gamma: float = 0.0,
 ) -> torch.Tensor:
     """
-    The SPILSNet loss function.
+    The SPILSNet loss function for 1D interface arrays.
+
+    Calculates:
+        Loss = alpha * Loss_F + beta * Loss_i + gamma * Loss_s
+
+    where:
+        - Loss_F: MSE between predicted and target nodal positions.
+        - Loss_i: MSE between predicted and target internal states.
+        - Loss_s: Smoothness loss from 1D finite-difference stencil:
+          L(e_i) = e_{i-1} - 2 * e_i + e_{i+1}
 
     Args:
         y_t_pred (torch.Tensor): Predicted nodal positions.
         y_t_target (torch.Tensor): Target nodal positions.
         i_t_pred (torch.Tensor): Predicted internal states.
         i_t_target (torch.Tensor): Target internal states.
-        alpha (float): Weight for position loss.
-        beta (float): Weight for internal state loss.
-        gamma (float): Weight for smoothness loss.
         n_nodes (int): Number of nodes.
-        dimension (int): Dimension of each node.
+        dimension (int): Dimension of each node. Defaults to 2.
+        alpha (float): Weight for position loss. Defaults to 0.9.
+        beta (float): Weight for internal state loss. Defaults to 0.1.
+        gamma (float): Weight for smoothness loss. Defaults to 0.0.
 
     Returns:
         torch.Tensor: The total loss.
     """
-
     loss_F = nn.functional.mse_loss(y_t_pred, y_t_target)
     loss_i = nn.functional.mse_loss(i_t_pred, i_t_target)
 
@@ -315,6 +323,130 @@ def spils_loss(
 
         laplacian_of_error = left_neighbors - (2 * center_nodes) + right_neighbors
         loss_s = torch.mean(laplacian_of_error**2)
+    else:
+        loss_s = torch.tensor(0.0, device=y_t_pred.device, dtype=y_t_pred.dtype)
+
+    return (alpha * loss_F) + (beta * loss_i) + (gamma * loss_s)
+
+
+def spils_loss_3d(
+    y_t_pred: torch.Tensor,
+    y_target: Optional[torch.Tensor] = None,
+    i_t_pred: Optional[torch.Tensor] = None,
+    i_t_target: Optional[torch.Tensor] = None,
+    n_nodes: Optional[int] = None,
+    dimension: int = 3,
+    alpha: float = 0.9,
+    beta: float = 0.1,
+    gamma: float = 0.0,
+    edge_index: Optional[torch.Tensor] = None,
+    pos: Optional[torch.Tensor] = None,
+    **kwargs: Any,
+) -> torch.Tensor:
+    """
+    The SPILSNet 3D loss function supporting unstructured surface meshes (triangles, quads, or mixed).
+
+    Calculates:
+        Loss = alpha * Loss_F + beta * Loss_i + gamma * Loss_s
+
+    where:
+        - Loss_F: MSE between predicted and target nodal states/positions.
+        - Loss_i: MSE between predicted and target internal states.
+        - Loss_s: Smoothness loss evaluated on the residual error e = y_pred - y_target.
+          * Mode 1 (Uniform, pos is None): Topological Graph Laplacian:
+            L(e_i) = sum_{j in N(i)} (e_j - e_i)
+          * Mode 2 (Geometric, pos is not None): Distance-normalized surface Laplacian:
+            d_ij = ||p_i - p_j||_2 + eps
+            w_ij = 1 / d_ij
+            L_w(e_i) = (1 / sum_{j in N(i)} w_ij) * sum_{j in N(i)} w_ij * (e_j - e_i)
+          * Fallback (edge_index is None): 1D finite-difference stencil.
+
+    Args:
+        y_t_pred (torch.Tensor): Predicted nodal states/positions of shape [Batch, N_nodes * Dim] or [Batch, N_nodes, Dim].
+        y_target (torch.Tensor, optional): Target nodal states/positions. Also accepts legacy alias `y_t_target`.
+        i_t_pred (torch.Tensor): Predicted internal states.
+        i_t_target (torch.Tensor): Target internal states.
+        n_nodes (int): Number of nodes on the interface.
+        dimension (int): Dimension of each node (e.g., 3 for 3D coordinates/features). Defaults to 3.
+        alpha (float): Weight for nodal position/state loss. Defaults to 0.9.
+        beta (float): Weight for internal state loss. Defaults to 0.1.
+        gamma (float): Weight for spatial smoothness loss. Defaults to 0.0.
+        edge_index (Optional[torch.Tensor]): Mesh edge connectivity of shape [2, Num_Edges]. Defaults to None.
+        pos (Optional[torch.Tensor]): Node 3D coordinates of shape [N_nodes, 3] or [Batch, N_nodes, 3]. Defaults to None.
+        **kwargs: Legacy keyword arguments (supports `y_t_target`).
+
+    Returns:
+        torch.Tensor: Total scalar loss tensor with gradient tracking.
+    """
+    if y_target is None:
+        if "y_t_target" in kwargs:
+            y_target = kwargs.pop("y_t_target")
+        else:
+            raise ValueError("y_target must be provided.")
+
+    if i_t_pred is None:
+        raise ValueError("i_t_pred must be provided.")
+    if i_t_target is None:
+        raise ValueError("i_t_target must be provided.")
+    if n_nodes is None:
+        raise ValueError("n_nodes must be provided.")
+
+    loss_F = nn.functional.mse_loss(y_t_pred, y_target)
+    loss_i = nn.functional.mse_loss(i_t_pred, i_t_target)
+
+    if gamma > 0:
+        total_elements = y_t_pred.numel()
+        batch_size = total_elements // (n_nodes * dimension)
+
+        # Reshape into [Batch, Nodes, Dim]
+        pred_3d = y_t_pred.view(batch_size, n_nodes, dimension)
+        target_3d = y_target.view(batch_size, n_nodes, dimension)
+
+        error_3d = pred_3d - target_3d
+
+        if edge_index is not None:
+            # Branch A: Unstructured mesh surface interface
+            edge_index_dev = edge_index.to(device=y_t_pred.device, dtype=torch.long)
+            src = edge_index_dev[0]
+            dst = edge_index_dev[1]
+
+            diff = error_3d[:, src, :] - error_3d[:, dst, :]  # [Batch, Num_Edges, Dim]
+
+            if pos is not None:
+                # Mode 2: Non-Uniform / Geometric Mesh
+                pos_dev = pos.to(device=y_t_pred.device, dtype=y_t_pred.dtype)
+                if pos_dev.dim() == 2:
+                    pos_dev = pos_dev.unsqueeze(0)  # [1, N_nodes, Coord_Dim]
+                if pos_dev.shape[0] == 1 and batch_size > 1:
+                    pos_dev = pos_dev.expand(batch_size, -1, -1)
+
+                pos_src = pos_dev[:, src, :]
+                pos_dst = pos_dev[:, dst, :]
+                eps = 1e-8
+                dist = torch.linalg.vector_norm(pos_src - pos_dst, dim=-1, keepdim=True) + eps  # [Batch, Num_Edges, 1]
+                w = 1.0 / dist  # [Batch, Num_Edges, 1]
+
+                weighted_diff = w * diff
+                laplacian = torch.zeros_like(error_3d)
+                laplacian.index_add_(1, dst, weighted_diff)
+
+                w_sum = torch.zeros(batch_size, n_nodes, 1, device=y_t_pred.device, dtype=y_t_pred.dtype)
+                w_sum.index_add_(1, dst, w)
+                laplacian = laplacian / torch.clamp(w_sum, min=eps)
+            else:
+                # Mode 1: Uniform Mesh Assumption
+                laplacian = torch.zeros_like(error_3d)
+                laplacian.index_add_(1, dst, diff)
+
+            loss_s = torch.mean(laplacian**2)
+        else:
+            # Fallback: 1D finite-difference stencil
+            left_neighbors = error_3d[:, 0:-2, :]
+            center_nodes = error_3d[:, 1:-1, :]
+            right_neighbors = error_3d[:, 2:, :]
+
+            laplacian_of_error = left_neighbors - (2 * center_nodes) + right_neighbors
+            loss_s = torch.mean(laplacian_of_error**2)
     else:
         loss_s = torch.tensor(0.0, device=y_t_pred.device, dtype=y_t_pred.dtype)
 
